@@ -1,9 +1,11 @@
 # Vance Credit — Master Wiring (all 4 services + the n8n gate)
 
 How enrollment, the billing-api, the verdict service, and the webhook receivers
-connect to the n8n billing gate and Supabase. CROA rule throughout: **nothing is
-charged at enrollment; a charge happens only when the report moved (dispute) or a
-round was documented (complete/rapid), one cycle at a time.**
+connect to the n8n billing gate and Supabase. **Two tiers, both movement-billed:**
+`dispute` = $99/cycle (First Class mail), `complete` = $149/cycle (Certified mail).
+They differ **only** in mail class — billing is identical. CROA rule throughout:
+**nothing is charged at enrollment; a charge happens only in cycles the report
+moved, one cycle at a time ("no movement, no charge").**
 
 ---
 
@@ -22,30 +24,34 @@ round was documented (complete/rapid), one cycle at a time.**
                                                           │
    ┌──────────────────────────── n8n billing gate (runs daily) ─────────────────────────┐
    │                                                      │                              │
-   │  GET billing-api /billing/due?date=YYYY-MM-DD  ──────┘  (active, not-yet-billed)    │
-   │        │                                                                            │
-   │        ├─ plan_tier = dispute ─▶ GET verdict /parser/verdict?client_id&cycle        │
-   │        │                          • moved?  yes → charge   no → SKIP (free month)   │
-   │        │                                                                            │
-   │        └─ plan_tier = complete/rapid ─▶ GET billing-api /dispatch/round-status      │
-   │                                          • round_documented? yes → charge  no → skip│
+   │  GET billing-api /billing/due?date=YYYY-MM-DD  ──────┘  (active, not-yet-billed;    │
+   │        │                                                tier-agnostic — ALL clients)│
+   │        ▼                                                                            │
+   │  GET verdict /parser/verdict?client_id&cycle    ◀── BOTH tiers, movement-billed     │
+   │        • moved?  yes → charge   no → SKIP ("no movement, no charge")                │
    │                                                                                     │
-   │   CHARGE  ─▶  NMI sale  (customer_vault_id, amount)                                 │
+   │   CHARGE  ─▶  NMI sale  (customer_vault_id, amount: $99 dispute / $149 complete)    │
    │        │                                                                            │
    │        ├─ success ─▶ POST webhooks /crc/invoice   (add invoice line to CRC)         │
    │        │        └──▶ POST webhooks /notify type=receipt   (SMS)                     │
    │        │        └──▶ POST billing-api /billing/mark-billed     ◀── ADD (idempotency)│
-   │        │        └──▶ POST verdict /parser/verdict/commit       ◀── ADD (dispute only)│
+   │        │        └──▶ POST verdict /parser/verdict/commit       ◀── ADD (both tiers) │
    │        │                                                                            │
    │        ├─ decline ─▶ POST webhooks /notify type=payment_failed (SMS)                │
    │        │                                                                            │
    │        └─ skip ────▶ POST webhooks /notify type=skipped        (SMS)                │
    └─────────────────────────────────────────────────────────────────────────────────────┘
+
+   Side channel (NOT a billing gate): when a `complete` client's Certified round
+   is mailed, the dispatch/CRC step POSTs billing-api /dispatch/record-round for
+   proof tracking. /dispatch/round-status is ops/audit only — it no longer gates
+   any charge.
 ```
 
 The two `◀── ADD` calls are **manual n8n additions** (see §3). Without
 `mark-billed`, the same client is re-billed next run; without `verdict/commit`,
-a billed deletion stays "movement" and bills again next cycle.
+a billed deletion stays "movement" and bills again next cycle. **`verdict/commit`
+now applies to BOTH tiers** (both are movement-billed), not dispute-only.
 
 ---
 
@@ -71,6 +77,13 @@ so a manual entry and a later snapshot/letter of the same change collapse to a
 single billable change. A manual entry alone is enough — the verdict returns
 `moved:true` with no snapshot ingested. (`CAPTURE_ORIGINS` restricts which origins
 the browser form may call; defaults to `*`.)
+
+**Mail class is the only difference between the two tiers** and is handled
+**outside the code**: for launch, the operator sets it manually in CloudMail per
+`plan_tier` — `dispute` → First Class, `complete` → Certified. `billing-api`
+`/dispatch/record-round` + `/dispatch/round-status` exist only to track/prove
+Certified sends (ops/audit), not to gate any charge. Lob-direct automation (set
+mail class programmatically from `plan_tier`) is the documented future step.
 
 ---
 
@@ -105,10 +118,11 @@ On the **successful charge** path, after the NMI sale returns approved, add:
      "cycle": "{{ $json.cycle }}",
      "transaction_id": "{{ $json.transaction_id }}" }
    ```
-2. **`POST <verdict>/parser/verdict/commit`** — **dispute plan only.** Marks the
-   moved item(s) as billed so the verdict never bills them again. (This node may
-   already be stubbed in the gate as "Commit Credited Changes" — confirm its URL
-   points at the verdict base and that it only runs on the dispute branch.)
+2. **`POST <verdict>/parser/verdict/commit`** — **both tiers** (both are now
+   movement-billed). Marks the moved item(s) as billed so the verdict never bills
+   them again. (This node may already be stubbed in the gate as "Commit Credited
+   Changes" — confirm its URL points at the verdict base. It previously ran on the
+   dispute branch only; it must now run for `complete` too.)
    ```json
    { "client_id": "{{ $json.client_id }}",
      "change_ids": {{ $json.credit_token || [] }},
@@ -169,8 +183,9 @@ billing-api/dispatch_schema.sql    -- vc_billed_cycles, vc_dispatch_rounds
 4. **Smoke-test each** `*/health` (or the verdict ghost check) returns ok.
 5. **Wire the gate** (§3): set the 6 placeholder targets, splitting
    `<<YOUR_API_BASE>>` between verdict-service and billing-api.
-6. **Add the two post-charge n8n nodes** (§3): `mark-billed` (all plans) and
-   `verdict/commit` (dispute only), on the successful-charge path.
+6. **Add the two post-charge n8n nodes** (§3): `mark-billed` and `verdict/commit`,
+   both for **all clients** (both tiers are movement-billed), on the
+   successful-charge path.
 7. **Point the pricing page** Collect.js form at `enrollment` `POST /enroll`.
 8. **Dry run on one test client**: enroll → confirm `vc_clients` row → run the
    gate for the current cycle → verify a single charge, a CRC invoice line, one
@@ -180,3 +195,7 @@ billing-api/dispatch_schema.sql    -- vc_billed_cycles, vc_dispatch_rounds
 > **Note:** CRC confirmed (support, June 2026) that credit report item-level data
 > is dashboard-only with no API — manual capture (Path B) is the deliberate
 > bridge; Path A (direct data API) is the future automation.
+
+> **Note:** mail class is set **manually in CloudMail** per `plan_tier` for launch
+> (`dispute` → First Class, `complete` → Certified). Lob-direct automation (mail
+> class driven programmatically from `plan_tier`) is the documented future step.

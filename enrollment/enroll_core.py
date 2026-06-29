@@ -11,8 +11,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 
-# plan_tier -> monthly_amount (USD, charged later by the gate, not at enrollment)
-PLAN_AMOUNTS: dict[str, int] = {"dispute": 99, "complete": 199, "rapid": 299}
+# plan_tier -> monthly_amount (USD, charged later by the gate, not at enrollment).
+# Two movement-billed tiers; they differ only in mail class (handled outside code):
+#   dispute  = $99/cycle, First Class mail   |   complete = $149/cycle, Certified mail
+PLAN_AMOUNTS: dict[str, int] = {"dispute": 99, "complete": 149}
 
 # The fields the billing gate reads off a client via /billing/due.
 BILLING_FIELDS = ("client_id", "plan_tier", "monthly_amount",

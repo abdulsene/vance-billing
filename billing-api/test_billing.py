@@ -22,7 +22,7 @@ def fresh_storage():
 
 def seed(client_id="c1", status="active"):
     appmod.STORAGE.save_client(Client(
-        client_id=client_id, plan_tier="complete", monthly_amount=199,
+        client_id=client_id, plan_tier="complete", monthly_amount=149,
         customer_vault_id="vault_1", cycle="2026-05",
         contact={"email": "jane@example.com", "phone": "+15555550123"},
         status=status, created_at="2026-05-01T00:00:00+00:00"))
@@ -40,7 +40,7 @@ def test_due_returns_active_unbilled_client():
     assert len(clients) == 1
     assert clients[0]["client_id"] == "c1"
     assert clients[0]["cycle"] == "2026-06"          # current cycle from `date`, not enrollment cycle
-    assert clients[0]["monthly_amount"] == 199
+    assert clients[0]["monthly_amount"] == 149
 
 
 def test_mark_billed_makes_client_drop_out_idempotency():

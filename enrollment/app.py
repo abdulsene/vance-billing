@@ -40,8 +40,9 @@ STORAGE = PostgresStorage(_dsn) if _dsn else InMemoryStorage()
 
 class EnrollIn(BaseModel):
     collect_js_token: str
-    # Literal -> unknown tiers are rejected at parse time with 422 (task step a).
-    plan_tier: Literal["dispute", "complete", "rapid"]
+    # Literal -> unknown tiers (including the retired "rapid") are rejected at
+    # parse time with 422.
+    plan_tier: Literal["dispute", "complete"]
     name: str
     email: str
     phone: str = ""

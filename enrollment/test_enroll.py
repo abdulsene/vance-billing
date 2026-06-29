@@ -52,7 +52,7 @@ def test_happy_path_vaults_and_persists(vault_ok):
     saved = appmod.STORAGE.get_client(cid)
     assert saved is not None
     assert saved.plan_tier == "complete"
-    assert saved.monthly_amount == 199
+    assert saved.monthly_amount == 149
     assert saved.customer_vault_id == "1234567890"
     assert saved.contact == {"email": "jane@example.com", "phone": "+15555550123"}
     assert saved.status == "active"
@@ -88,8 +88,9 @@ def test_nmi_network_error_returns_402(monkeypatch):
     assert appmod.STORAGE.list_clients() == []
 
 
-def test_bad_plan_tier_returns_422(vault_ok):
-    r = client.post("/enroll", json=_body(plan_tier="platinum"))
+@pytest.mark.parametrize("bad_tier", ["platinum", "rapid"])  # "rapid" is retired
+def test_bad_plan_tier_returns_422(vault_ok, bad_tier):
+    r = client.post("/enroll", json=_body(plan_tier=bad_tier))
     assert r.status_code == 422
     assert appmod.STORAGE.list_clients() == []        # rejected before any vault/persist
 
