@@ -1,28 +1,25 @@
 """
-Vance Credit — Movement Verdict (core logic)
+Vance Credit — Movement Verdict (core logic)  [Path B update]
 
-Pure-stdlib, no I/O. Decides whether a client's tri-bureau report MOVED in a
-billing cycle, by diffing this cycle's snapshot against the previous one,
-classifying only *favorable* item-level changes, corroborating with bureau
-response letters, and de-duplicating against changes already credited (so the
-same deletion is never billed twice — once via letter, again when the snapshot
-catches up).
+Decides whether a client's tri-bureau report MOVED in a cycle. Three input
+sources, all deduped by a shared change_id so the same favorable change bills
+ONCE no matter how it was detected:
 
-Returns moved=True only when there is >=1 favorable change NOT already credited.
-This module never writes the ledger; commit happens after a charge succeeds.
+  1. snapshot diff   — automated, when a report snapshot is available
+  2. response letters — bureau "deleted" confirmations
+  3. manual movement  — reviewer-confirmed changes captured at CRC re-import (Path B)
+
+A deletion logged by a reviewer this month shares a change_id with the same
+deletion if a snapshot later sees it — so going from Path B to Path A never
+double-bills. Read-only: the ledger is committed only after a charge clears.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 import re
 
-# --------------------------------------------------------------------------- #
-# Normalization
-# --------------------------------------------------------------------------- #
-
 _NEGATIVE_TYPES = {"collection", "public_record", "inquiry"}
 
-# Lower number = healthier. Used to decide if a status change is an improvement.
 SEVERITY = {
     "current": 0, "ok": 0, "paid": 0, "closed": 0, "paid_closed": 0,
     "late_30": 30, "late_60": 60, "late_90": 90, "late_120": 120,
@@ -62,21 +59,17 @@ def normalize_status(status: str) -> Optional[str]:
         return _STATUS_ALIASES[s]
     if s in SEVERITY:
         return s
-    return None  # unknown -> not comparable, never credited
+    return None
 
 
 def severity(status: Optional[str]) -> Optional[int]:
     return SEVERITY.get(status) if status else None
 
 
-# --------------------------------------------------------------------------- #
-# Models
-# --------------------------------------------------------------------------- #
-
 @dataclass
 class Item:
-    bureau: str                 # "EQ" | "TU" | "EX"
-    item_type: str              # "tradeline" | "collection" | "public_record" | "inquiry"
+    bureau: str
+    item_type: str
     creditor: str
     account_mask: str = ""
     status: str = ""
@@ -98,8 +91,8 @@ class Item:
 @dataclass
 class Snapshot:
     client_id: str
-    cycle: str                  # e.g. "2026-06"
-    items: list = field(default_factory=list)  # list[Item]
+    cycle: str
+    items: list = field(default_factory=list)
 
     def by_fp(self) -> dict:
         return {i.fingerprint: i for i in self.items}
@@ -111,7 +104,7 @@ class LetterOutcome:
     item_type: str
     creditor: str
     account_mask: str = ""
-    outcome: str = ""           # "deleted" | "updated" | "verified" | "remains"
+    outcome: str = ""
 
     @property
     def fingerprint(self) -> str:
@@ -125,10 +118,10 @@ class Change:
     bureau: str
     creditor: str
     item_type: str
-    kind: str                   # "deletion" | "status_improvement"
+    kind: str
     detail: str
-    source: str                 # "snapshot" | "letter" | "snapshot+letter"
-    target: str                 # "deleted" | new status
+    source: str
+    target: str
 
 
 @dataclass
@@ -136,16 +129,15 @@ class Verdict:
     client_id: str
     cycle: str
     moved: bool
-    changes: list                       # list[dict]
-    credit_token: list                  # list[change_id] to commit after charge
+    changes: list
+    credit_token: list
 
 
-# --------------------------------------------------------------------------- #
-# Change detection
-# --------------------------------------------------------------------------- #
+def _fp(bureau, item_type, creditor, account_mask) -> str:
+    return f"{bureau}|{item_type}|{normalize_creditor(creditor)}|{account_mask}"
+
 
 def _deletion_id(fp: str) -> str:
-    # Same id whether discovered by letter or snapshot, so they de-dup against each other.
     return f"{fp}|deletion|deleted"
 
 
@@ -153,24 +145,17 @@ def _improvement_id(fp: str, new_status: str) -> str:
     return f"{fp}|status_improvement|{new_status}"
 
 
-def diff_snapshots(previous: Optional[Snapshot], current: Snapshot) -> list:
-    """Favorable changes visible on the report itself."""
+def diff_snapshots(previous: Optional[Snapshot], current: Optional[Snapshot]) -> list:
     out: list = []
-    if previous is None:
+    if previous is None or current is None:
         return out
-    prev = previous.by_fp()
-    curr = current.by_fp()
-
-    # Deletions: present before, gone now — only credit if the deleted item was negative.
+    prev, curr = previous.by_fp(), current.by_fp()
     for fp, item in prev.items():
         if fp not in curr and item.is_negative:
-            out.append(Change(
-                change_id=_deletion_id(fp), fingerprint=fp, bureau=item.bureau,
-                creditor=item.creditor, item_type=item.item_type, kind="deletion",
-                detail=f"{item.item_type.replace('_', ' ')} '{item.creditor}' deleted",
-                source="snapshot", target="deleted"))
-
-    # Status improvements: same item, strictly healthier status.
+            out.append(Change(_deletion_id(fp), fp, item.bureau, item.creditor,
+                              item.item_type, "deletion",
+                              f"{item.item_type.replace('_', ' ')} '{item.creditor}' deleted",
+                              "snapshot", "deleted"))
     for fp, citem in curr.items():
         pitem = prev.get(fp)
         if not pitem:
@@ -178,56 +163,66 @@ def diff_snapshots(previous: Optional[Snapshot], current: Snapshot) -> list:
         ps, cs = normalize_status(pitem.status), normalize_status(citem.status)
         psev, csev = severity(ps), severity(cs)
         if psev is not None and csev is not None and csev < psev:
-            out.append(Change(
-                change_id=_improvement_id(fp, cs), fingerprint=fp, bureau=citem.bureau,
-                creditor=citem.creditor, item_type=citem.item_type, kind="status_improvement",
-                detail=f"'{citem.creditor}': {ps} \u2192 {cs}",
-                source="snapshot", target=cs))
+            out.append(Change(_improvement_id(fp, cs), fp, citem.bureau, citem.creditor,
+                              citem.item_type, "status_improvement",
+                              f"'{citem.creditor}': {ps} \u2192 {cs}", "snapshot", cs))
     return out
 
 
 def changes_from_letters(letters: list) -> list:
-    """Bureau response letters confirming deletions (early signal + attribution)."""
     out: list = []
     for lo in letters or []:
         if (lo.outcome or "").lower() == "deleted":
             fp = lo.fingerprint
-            out.append(Change(
-                change_id=_deletion_id(fp), fingerprint=fp, bureau=lo.bureau,
-                creditor=lo.creditor, item_type=lo.item_type, kind="deletion",
-                detail=f"{lo.item_type.replace('_', ' ')} '{lo.creditor}' deleted (bureau response)",
-                source="letter", target="deleted"))
+            out.append(Change(_deletion_id(fp), fp, lo.bureau, lo.creditor, lo.item_type,
+                              "deletion",
+                              f"{lo.item_type.replace('_', ' ')} '{lo.creditor}' deleted (bureau response)",
+                              "letter", "deleted"))
     return out
 
 
-def _merge(snapshot_changes: list, letter_changes: list) -> list:
-    """One entry per change_id; if both snapshot and letter saw it, mark source as both."""
+def changes_from_manual(entries: list) -> list:
+    """Reviewer-confirmed favorable changes captured at CRC re-import (Path B)."""
+    out: list = []
+    for e in entries or []:
+        bureau = e.get("bureau", ""); item_type = e.get("item_type", "")
+        creditor = e.get("creditor", ""); mask = e.get("account_mask", "")
+        fp = _fp(bureau, item_type, creditor, mask)
+        kind = (e.get("kind") or "").lower()
+        if kind == "deletion":
+            out.append(Change(_deletion_id(fp), fp, bureau, creditor, item_type, "deletion",
+                              f"{item_type.replace('_', ' ')} '{creditor}' deleted (reviewer-confirmed)",
+                              "manual", "deleted"))
+        elif kind in ("status_improvement", "improvement"):
+            target = normalize_status(e.get("target", "")) or (e.get("target") or "improved")
+            out.append(Change(_improvement_id(fp, target), fp, bureau, creditor, item_type,
+                              "status_improvement",
+                              f"'{creditor}': improved to {target} (reviewer-confirmed)",
+                              "manual", target))
+    return out
+
+
+def _merge(*change_lists) -> list:
+    """One entry per change_id; record every source that saw it, in encounter order."""
     merged: dict = {}
-    for c in snapshot_changes + letter_changes:
-        if c.change_id in merged:
-            existing = merged[c.change_id]
-            if existing.source != c.source:
-                existing.source = "snapshot+letter"
-        else:
-            merged[c.change_id] = c
+    for lst in change_lists:
+        for c in lst:
+            if c.change_id in merged:
+                ex = merged[c.change_id]
+                if c.source not in ex.source.split("+"):
+                    ex.source = ex.source + "+" + c.source
+            else:
+                merged[c.change_id] = c
     return list(merged.values())
 
 
-# --------------------------------------------------------------------------- #
-# Verdict
-# --------------------------------------------------------------------------- #
-
-def compute_verdict(client_id: str, cycle: str, current: Snapshot,
-                    previous: Optional[Snapshot], letters: list,
-                    credited: set) -> Verdict:
-    """
-    moved = there is >=1 favorable change this cycle that has NOT already been
-    credited (billed) for this client. credited is a set of change_ids.
-    """
-    candidates = _merge(diff_snapshots(previous, current), changes_from_letters(letters))
+def compute_verdict(client_id: str, cycle: str, current: Optional[Snapshot],
+                    previous: Optional[Snapshot], letters: list, credited: set,
+                    manual: Optional[list] = None) -> Verdict:
+    candidates = _merge(diff_snapshots(previous, current),
+                        changes_from_letters(letters),
+                        changes_from_manual(manual or []))
     fresh = [c for c in candidates if c.change_id not in credited]
-    return Verdict(
-        client_id=client_id, cycle=cycle, moved=len(fresh) > 0,
-        changes=[asdict(c) for c in fresh],
-        credit_token=[c.change_id for c in fresh],
-    )
+    return Verdict(client_id=client_id, cycle=cycle, moved=len(fresh) > 0,
+                   changes=[asdict(c) for c in fresh],
+                   credit_token=[c.change_id for c in fresh])

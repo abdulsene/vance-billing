@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Vance Credit — Movement Capture</title>
+<style>
+  :root{
+    --ink:#0F1C2C; --ink-soft:#2C3A48; --paper:#F6F5F1; --card:#FFFFFF;
+    --accent:#15705C; --accent-deep:#0C4A3C; --gold:#D29A3A; --line:#E1E0DA;
+    --muted:#5C6471; --bad:#A8554C; --radius:10px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:Inter,system-ui,Segoe UI,sans-serif;background:var(--paper);color:var(--ink);line-height:1.5}
+  .wrap{max-width:860px;margin:0 auto;padding:0 20px 60px}
+  header{background:var(--ink);color:#fff;padding:18px 0;margin-bottom:26px}
+  header .wrap{display:flex;align-items:center;justify-content:space-between}
+  header h1{font-size:1.15rem;font-weight:700;letter-spacing:-.01em}
+  header .tag{font-size:.8rem;color:#9fb0c0;font-family:ui-monospace,monospace}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:20px 22px;margin-bottom:18px}
+  .card h2{font-size:.82rem;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin-bottom:14px}
+  label{display:block;font-size:.78rem;font-weight:600;color:var(--ink-soft);margin-bottom:5px}
+  input,select{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:.92rem;background:#fff;color:var(--ink)}
+  input:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(21,112,92,.12)}
+  .row{display:grid;gap:12px}
+  .row.two{grid-template-columns:1fr 1fr}
+  .field{margin-bottom:14px}
+  .config{display:grid;grid-template-columns:2fr 1fr 1fr;gap:12px}
+  @media(max-width:680px){.config,.row.two{grid-template-columns:1fr}}
+
+  table{width:100%;border-collapse:collapse;margin-bottom:12px;font-size:.88rem}
+  th{text-align:left;font-size:.7rem;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:6px 6px;border-bottom:1px solid var(--line)}
+  td{padding:6px 6px;vertical-align:top}
+  td select,td input{padding:7px 8px;font-size:.85rem}
+  .del{background:none;border:none;color:var(--bad);cursor:pointer;font-size:1.1rem;line-height:1;padding:4px 8px}
+  .btn{font:inherit;font-weight:600;font-size:.92rem;border:none;border-radius:8px;padding:11px 18px;cursor:pointer}
+  .btn-primary{background:var(--accent);color:#fff}
+  .btn-primary:hover{background:var(--accent-deep)}
+  .btn-ghost{background:#fff;border:1px solid var(--line);color:var(--ink-soft)}
+  .btn-ghost:hover{border-color:var(--muted)}
+  .btn-add{background:rgba(21,112,92,.08);color:var(--accent-deep);border:1px dashed var(--accent);font-size:.85rem;padding:8px 14px}
+  .actions{display:flex;gap:12px;flex-wrap:wrap;margin-top:6px}
+
+  .result{display:none;border-radius:var(--radius);padding:18px 20px;margin-top:18px;font-size:.95rem}
+  .result.show{display:block}
+  .result.bill{background:rgba(21,112,92,.08);border:1px solid rgba(21,112,92,.35)}
+  .result.nobill{background:rgba(210,154,58,.09);border:1px solid rgba(210,154,58,.4)}
+  .result.err{background:rgba(168,85,76,.09);border:1px solid rgba(168,85,76,.4)}
+  .result h3{font-size:1.05rem;margin-bottom:8px}
+  .result ul{margin:8px 0 0 18px}
+  .result li{margin-bottom:3px}
+  .hint{font-size:.78rem;color:var(--muted);margin-top:6px}
+  .imp-target{display:none}
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <h1>Vance Credit — Movement Capture</h1>
+    <span class="tag">Path B · log at re-import</span>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <div class="card">
+    <h2>Setup</h2>
+    <div class="config">
+      <div><label>Verdict service URL</label><input id="base" placeholder="https://your-verdict-service.up.railway.app" /></div>
+      <div><label>Client ID</label><input id="client" placeholder="crc_12345" /></div>
+      <div><label>Cycle</label><input id="cycle" placeholder="2026-06" /></div>
+    </div>
+    <p class="hint">Set the verdict service URL once. Client ID is the same ID used across enrollment/billing. Cycle defaults to this month.</p>
+  </div>
+
+  <div class="card">
+    <h2>Favorable changes this cycle</h2>
+    <table>
+      <thead>
+        <tr><th>Bureau</th><th>Type</th><th>Creditor</th><th>Acct (last 4)</th><th>Change</th><th>Improved to</th><th></th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <button class="btn btn-add" onclick="addRow()">+ Add change</button>
+    <p class="hint">Log only <strong>favorable</strong> changes you see after re-import: a negative item deleted, or a status that got healthier. Leave it empty and use “No movement” if nothing improved.</p>
+
+    <div class="actions">
+      <button class="btn btn-primary" onclick="submitMovement()">Submit movement &amp; check verdict</button>
+      <button class="btn btn-ghost" onclick="markNoMovement()">Mark reviewed — no movement</button>
+    </div>
+
+    <div id="result" class="result"></div>
+  </div>
+
+</div>
+
+<script>
+const ITEM_TYPES = ["collection","tradeline","public_record","inquiry"];
+const TARGETS = ["current","paid","settled","paid_collection","late_30","late_60","late_90"];
+
+// default cycle = this month, YYYY-MM
+document.getElementById("cycle").value = new Date().toISOString().slice(0,7);
+
+function opt(v){ return `<option value="${v}">${v}</option>`; }
+
+function addRow(){
+  const tr = document.createElement("tr");
+  tr.innerHTML = `
+    <td><select class="f-bureau">${opt("EQ")}${opt("TU")}${opt("EX")}</select></td>
+    <td><select class="f-type">${ITEM_TYPES.map(opt).join("")}</select></td>
+    <td><input class="f-creditor" placeholder="ABC Collections" /></td>
+    <td><input class="f-mask" placeholder="1234" /></td>
+    <td><select class="f-kind" onchange="toggleTarget(this)">
+        <option value="deletion">Deleted</option>
+        <option value="status_improvement">Improved</option></select></td>
+    <td><select class="f-target imp-target">${TARGETS.map(opt).join("")}</select></td>
+    <td><button class="del" onclick="this.closest('tr').remove()">×</button></td>`;
+  document.getElementById("rows").appendChild(tr);
+}
+function toggleTarget(sel){
+  const t = sel.closest("tr").querySelector(".f-target");
+  t.style.display = sel.value === "status_improvement" ? "block" : "none";
+}
+addRow();
+
+function collectEntries(){
+  const entries = [];
+  document.querySelectorAll("#rows tr").forEach(tr=>{
+    const creditor = tr.querySelector(".f-creditor").value.trim();
+    if(!creditor) return; // skip blank rows
+    const kind = tr.querySelector(".f-kind").value;
+    const e = {
+      bureau: tr.querySelector(".f-bureau").value,
+      item_type: tr.querySelector(".f-type").value,
+      creditor,
+      account_mask: tr.querySelector(".f-mask").value.trim(),
+      kind
+    };
+    if(kind === "status_improvement") e.target = tr.querySelector(".f-target").value;
+    entries.push(e);
+  });
+  return entries;
+}
+
+function ctx(){
+  const base = document.getElementById("base").value.trim().replace(/\/$/,"");
+  const client_id = document.getElementById("client").value.trim();
+  const cycle = document.getElementById("cycle").value.trim();
+  return {base, client_id, cycle};
+}
+
+function show(cls, html){
+  const r = document.getElementById("result");
+  r.className = "result show " + cls;
+  r.innerHTML = html;
+}
+
+async function post(url, body){
+  const res = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return res.json();
+}
+
+async function submitMovement(){
+  const {base, client_id, cycle} = ctx();
+  if(!base || !client_id || !cycle){ return show("err","<h3>Missing setup</h3><p>Fill in the service URL, client ID, and cycle.</p>"); }
+  const entries = collectEntries();
+  if(entries.length === 0){ return show("err","<h3>No changes entered</h3><p>Add at least one change, or use “Mark reviewed — no movement”.</p>"); }
+  try{
+    await post(`${base}/parser/manual-movement`, {client_id, cycle, entries});
+    const v = await (await fetch(`${base}/parser/verdict?client_id=${encodeURIComponent(client_id)}&cycle=${encodeURIComponent(cycle)}`)).json();
+    if(v.moved){
+      const items = (v.changes||[]).map(c=>`<li>${c.detail}</li>`).join("");
+      show("bill", `<h3>✓ Movement recorded — this client will be billed this cycle.</h3>
+        <p><strong>${v.changes.length}</strong> new billable change(s):</p><ul>${items}</ul>`);
+    } else {
+      show("nobill", `<h3>Recorded — but no <em>new</em> billable movement.</h3>
+        <p>Everything you logged was already credited in a prior cycle, so this client won't be charged again for it. No double-billing.</p>`);
+    }
+  }catch(err){ show("err", `<h3>Couldn't reach the verdict service</h3><p>${err.message}. Check the service URL.</p>`); }
+}
+
+async function markNoMovement(){
+  const {base, client_id, cycle} = ctx();
+  if(!base || !client_id || !cycle){ return show("err","<h3>Missing setup</h3><p>Fill in the service URL, client ID, and cycle.</p>"); }
+  try{
+    await post(`${base}/parser/manual-movement`, {client_id, cycle, entries:[]});
+    show("nobill", `<h3>Logged: reviewed, no movement.</h3>
+      <p>This client won't be charged for ${cycle}. The work continues next round.</p>`);
+  }catch(err){ show("err", `<h3>Couldn't reach the verdict service</h3><p>${err.message}.</p>`); }
+}
+</script>
+</body>
+</html>
