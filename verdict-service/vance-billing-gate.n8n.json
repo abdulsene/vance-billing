@@ -1,0 +1,647 @@
+{
+  "name": "Vance Credit \u2014 Billing Gate (movement + activity)",
+  "nodes": [
+    {
+      "parameters": {
+        "content": "## Vance Credit \u2014 Billing Gate\\n\\n**Swap these 2 values** in the **NMI Vault Sale** node:\\n- `<<NMI_SECURITY_KEY>>` \u2192 your NMI gateway Security Key\\n- `<<NMI_ENDPOINT>>` \u2192 `secure.nmi.com` (or eCrypt white-label host)\\n\\n**Point these HTTP nodes at your own system** (URLs marked `<<...>>`):\\nGet Clients Due \u00b7 Get Movement Verdict \u00b7 Get Round Status \u00b7 Create CRC Invoice \u00b7 Commit Credited Changes \u00b7 the 3 notify nodes.\\n\\nFull data shapes are in the README.",
+        "height": 380,
+        "width": 420
+      },
+      "id": "sticky1",
+      "name": "SETUP \u2014 read me",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        -200
+      ]
+    },
+    {
+      "parameters": {
+        "content": "## One charger only\\nThis gate is the ONLY thing allowed to charge the vault. No parallel CRC/Billsby subscription.\\n\\n## No double-billing a cycle\\n`Get Clients Due` must return only clients NOT already billed this `cycle`.\\n\\n## Commit closes the loop\\nAfter a successful **Dispute** charge, **Commit Credited Changes** marks the moved items as billed so the verdict service never bills them again.",
+        "height": 250,
+        "width": 420
+      },
+      "id": "sticky2",
+      "name": "DISCIPLINE",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -360,
+        210
+      ]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 9
+            }
+          ]
+        }
+      },
+      "id": "n_sched",
+      "name": "Schedule (daily 9am)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        20,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=<<YOUR_API_BASE>>/billing/due?date={{ $now.format('yyyy-MM-dd') }}",
+        "sendQuery": false,
+        "options": {}
+      },
+      "id": "n_due",
+      "name": "Get Clients Due",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const res = $input.first().json;\nconst clients = Array.isArray(res) ? res : (res.clients ?? res.data ?? []);\nreturn clients.map(c => ({ json: c }));"
+      },
+      "id": "n_split",
+      "name": "One Item Per Client",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        460,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.plan_tier }}",
+              "rightValue": "dispute",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n_route",
+      "name": "Route: Dispute vs Activity",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        680,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=<<YOUR_API_BASE>>/parser/verdict?client_id={{ $json.client_id }}&cycle={{ $json.cycle }}",
+        "sendQuery": false,
+        "options": {}
+      },
+      "id": "n_verdict",
+      "name": "Get Movement Verdict",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const v = $json;\nconst c = $('One Item Per Client').item.json;\nreturn { json: { ...c, should_charge: v.moved === true,\n  charge_reason: v.moved ? 'report moved' : 'no movement this cycle',\n  changes: v.changes || [], credit_token: v.credit_token || [] } };",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "n_decM",
+      "name": "Decide \u2014 Movement",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        -140
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=<<YOUR_API_BASE>>/dispatch/round-status?client_id={{ $json.client_id }}&cycle={{ $json.cycle }}",
+        "sendQuery": false,
+        "options": {}
+      },
+      "id": "n_round",
+      "name": "Get Round Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $json;\nconst c = $('One Item Per Client').item.json;\nreturn { json: { ...c, should_charge: r.round_documented === true,\n  charge_reason: r.round_documented ? 'documented round completed' : 'no documented round this cycle',\n  round_id: r.round_id || null, credit_token: [] } };",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "n_decA",
+      "name": "Decide \u2014 Activity",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1120,
+        140
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.should_charge }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n_should",
+      "name": "Should Charge?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1360,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://<<NMI_ENDPOINT>>/api/transact.php",
+        "sendBody": true,
+        "contentType": "form-urlencoded",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "security_key",
+              "value": "<<NMI_SECURITY_KEY>>"
+            },
+            {
+              "name": "type",
+              "value": "sale"
+            },
+            {
+              "name": "amount",
+              "value": "={{ $json.monthly_amount }}"
+            },
+            {
+              "name": "customer_vault_id",
+              "value": "={{ $json.customer_vault_id }}"
+            },
+            {
+              "name": "order_id",
+              "value": "={{ $json.client_id }}-{{ $json.cycle }}"
+            },
+            {
+              "name": "order_description",
+              "value": "=Vance Credit {{ $json.plan_tier }} - cycle {{ $json.cycle }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "n_nmi",
+      "name": "NMI Vault Sale",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1580,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const text = $json.data ?? $json.body ?? '';\nconst p = Object.fromEntries(new URLSearchParams(text));\nconst c = $('Should Charge?').item.json;\nreturn { json: { ...c, nmi_response: p.response, nmi_text: p.responsetext,\n  transaction_id: p.transactionid, nmi_raw: text } };",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "n_parse",
+      "name": "Parse NMI Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.nmi_response }}",
+              "rightValue": "1",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n_appr",
+      "name": "NMI Approved?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2020,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=<<CRC_INVOICE_WEBHOOK>>",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({client_id:$json.client_id, amount:$json.monthly_amount, plan_tier:$json.plan_tier, cycle:$json.cycle, transaction_id:$json.transaction_id, description:'Vance Credit '+$json.plan_tier+' - '+$json.charge_reason}) }}",
+        "options": {}
+      },
+      "id": "n_crc",
+      "name": "Create CRC Invoice",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=<<NOTIFY_WEBHOOK>>",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({type:'receipt', client_id:$json.client_id, amount:$json.monthly_amount, cycle:$json.cycle, reason:$json.charge_reason, contact:$json.contact}) }}",
+        "options": {}
+      },
+      "id": "n_receipt",
+      "name": "Send Receipt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2460,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.plan_tier }}",
+              "rightValue": "dispute",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "n_isdisp",
+      "name": "Is Dispute? (commit)",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        2680,
+        -220
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=<<YOUR_API_BASE>>/parser/verdict/commit",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({client_id:$json.client_id, change_ids:$json.credit_token||[], transaction_id:$json.transaction_id}) }}",
+        "options": {}
+      },
+      "id": "n_commit",
+      "name": "Commit Credited Changes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2900,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=<<NOTIFY_WEBHOOK>>",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({type:'payment_failed', client_id:$json.client_id, amount:$json.monthly_amount, cycle:$json.cycle, nmi_text:$json.nmi_text, contact:$json.contact}) }}",
+        "options": {}
+      },
+      "id": "n_dun",
+      "name": "Payment Failed \u2014 Dunning",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2240,
+        -20
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const c = $json;\nconst msg = c.plan_tier === 'dispute'\n  ? 'No movement this cycle - month is free (no charge).'\n  : 'No documented round this cycle - internal review; no charge.';\nreturn { json: { ...c, skipped: true, skip_message: msg } };",
+        "mode": "runOnceForEachItem"
+      },
+      "id": "n_log",
+      "name": "Log Skipped Cycle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1580,
+        180
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=<<NOTIFY_WEBHOOK>>",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({type:'skipped', client_id:$json.client_id, plan_tier:$json.plan_tier, cycle:$json.cycle, message:$json.skip_message, contact:$json.contact}) }}",
+        "options": {}
+      },
+      "id": "n_skipnote",
+      "name": "Notify (skip / on-us)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1800,
+        180
+      ]
+    }
+  ],
+  "connections": {
+    "Schedule (daily 9am)": {
+      "main": [
+        [
+          {
+            "node": "Get Clients Due",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Clients Due": {
+      "main": [
+        [
+          {
+            "node": "One Item Per Client",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "One Item Per Client": {
+      "main": [
+        [
+          {
+            "node": "Route: Dispute vs Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route: Dispute vs Activity": {
+      "main": [
+        [
+          {
+            "node": "Get Movement Verdict",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Round Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Movement Verdict": {
+      "main": [
+        [
+          {
+            "node": "Decide \u2014 Movement",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide \u2014 Movement": {
+      "main": [
+        [
+          {
+            "node": "Should Charge?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Round Status": {
+      "main": [
+        [
+          {
+            "node": "Decide \u2014 Activity",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decide \u2014 Activity": {
+      "main": [
+        [
+          {
+            "node": "Should Charge?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Should Charge?": {
+      "main": [
+        [
+          {
+            "node": "NMI Vault Sale",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Log Skipped Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NMI Vault Sale": {
+      "main": [
+        [
+          {
+            "node": "Parse NMI Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse NMI Response": {
+      "main": [
+        [
+          {
+            "node": "NMI Approved?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "NMI Approved?": {
+      "main": [
+        [
+          {
+            "node": "Create CRC Invoice",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Payment Failed \u2014 Dunning",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create CRC Invoice": {
+      "main": [
+        [
+          {
+            "node": "Send Receipt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Receipt": {
+      "main": [
+        [
+          {
+            "node": "Is Dispute? (commit)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Dispute? (commit)": {
+      "main": [
+        [
+          {
+            "node": "Commit Credited Changes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Log Skipped Cycle": {
+      "main": [
+        [
+          {
+            "node": "Notify (skip / on-us)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
