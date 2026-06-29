@@ -53,7 +53,7 @@ a billed deletion stays "movement" and bills again next cycle.
 
 | Service | Railway root dir | Env vars | Supabase tables (own / read) |
 |---|---|---|---|
-| **verdict-service** | `verdict-service` | `DATABASE_URL` | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes` |
+| **verdict-service** | `verdict-service` | `DATABASE_URL`, `CAPTURE_ORIGINS` *(opt, CORS; default `*`)* | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes`, `vc_manual_movements` |
 | **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(default secure.nmi.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` |
 | **billing-api** | `billing-api` | `DATABASE_URL` | **owns** `vc_billed_cycles`, `vc_dispatch_rounds`; **reads** `vc_clients` |
 | **webhooks** | `webhooks` | `CRC_INVOICE_URL` *(opt)*, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` *(all opt)* | **none** (stateless) |
@@ -61,6 +61,16 @@ a billed deletion stays "movement" and bills again next cycle.
 Every service: NIXPACKS builder, `.python-version` = **3.12**, start command
 `uvicorn app:app --host 0.0.0.0 --port ${PORT:-8080}`. Unset optional env vars
 degrade to a logged stub (CRC forward / Twilio SMS) — safe for dev.
+
+**Verdict has three movement sources, deduped to one charge.** Beyond tri-bureau
+**snapshots** and bureau-response **letters**, the verdict service now accepts
+reviewer-confirmed **manual movement** via `POST /parser/manual-movement`,
+captured with `capture/movement-capture.html` after each CRC re-import. All three
+sources share the same `change_id` (`bureau|type|creditor|account|kind|target`),
+so a manual entry and a later snapshot/letter of the same change collapse to a
+single billable change. A manual entry alone is enough — the verdict returns
+`moved:true` with no snapshot ingested. (`CAPTURE_ORIGINS` restricts which origins
+the browser form may call; defaults to `*`.)
 
 ---
 
@@ -120,21 +130,23 @@ From every `schema.sql` across the repo:
 | `vc_snapshots` | `verdict-service/schema.sql` | verdict-service | verdict-service |
 | `vc_letters` | `verdict-service/schema.sql` | verdict-service | verdict-service |
 | `vc_credited_changes` | `verdict-service/schema.sql` | verdict-service (on commit) | verdict-service |
+| `vc_manual_movements` | `verdict-service/manual_schema.sql` | verdict-service (on manual capture) | verdict-service |
 | `vc_clients` | `enrollment/clients_schema.sql` | enrollment | billing-api |
 | `vc_billed_cycles` | `billing-api/dispatch_schema.sql` | billing-api (mark-billed) | billing-api |
 | `vc_dispatch_rounds` | `billing-api/dispatch_schema.sql` | billing-api (record-round) | billing-api |
 
 > **enrollment + billing-api MUST share one Supabase database** — billing-api
-> reads the `vc_clients` table enrollment writes. Simplest setup: put **all six
+> reads the `vc_clients` table enrollment writes. Simplest setup: put **all seven
 > tables in one Supabase database** and give all three DB-backed services the same
 > `DATABASE_URL`. (verdict-service can technically use its own DB, but one shared
 > database is the recommended, simplest configuration.)
 
-Apply all three schema files once to that database:
+Apply all four schema files once to that database:
 ```
-verdict-service/schema.sql        -- vc_snapshots, vc_letters, vc_credited_changes
-enrollment/clients_schema.sql     -- vc_clients
-billing-api/dispatch_schema.sql   -- vc_billed_cycles, vc_dispatch_rounds
+verdict-service/schema.sql         -- vc_snapshots, vc_letters, vc_credited_changes
+verdict-service/manual_schema.sql  -- vc_manual_movements (Path B)
+enrollment/clients_schema.sql      -- vc_clients
+billing-api/dispatch_schema.sql    -- vc_billed_cycles, vc_dispatch_rounds
 ```
 
 ---
@@ -164,4 +176,7 @@ billing-api/dispatch_schema.sql   -- vc_billed_cycles, vc_dispatch_rounds
    gate for the current cycle → verify a single charge, a CRC invoice line, one
    SMS, and that the client disappears from the next `/billing/due`.
 9. **Schedule the gate daily** once the dry run is clean.
-```
+
+> **Note:** CRC confirmed (support, June 2026) that credit report item-level data
+> is dashboard-only with no API — manual capture (Path B) is the deliberate
+> bridge; Path A (direct data API) is the future automation.
