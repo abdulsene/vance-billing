@@ -15,12 +15,13 @@ Storage: in-memory by default; set DATABASE_URL to use Postgres/Supabase.
 from __future__ import annotations
 import os
 from typing import Optional, Literal
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from verdict_core import Item, Snapshot, LetterOutcome, compute_verdict
 from storage import InMemoryStorage, PostgresStorage
+from _auth import require_api_key
 
 app = FastAPI(title="Vance Credit — Movement Verdict")
 
@@ -88,7 +89,7 @@ class CommitIn(BaseModel):
     transaction_id: Optional[str] = None
 
 
-@app.post("/parser/snapshot")
+@app.post("/parser/snapshot", dependencies=[Depends(require_api_key)])
 def ingest_snapshot(body: SnapshotIn):
     snap = Snapshot(client_id=body.client_id, cycle=body.cycle,
                     items=[Item(**i.model_dump()) for i in body.items])
@@ -96,21 +97,21 @@ def ingest_snapshot(body: SnapshotIn):
     return {"ok": True, "items": len(snap.items)}
 
 
-@app.post("/parser/letters")
+@app.post("/parser/letters", dependencies=[Depends(require_api_key)])
 def ingest_letters(body: LettersIn):
     outcomes = [LetterOutcome(**o.model_dump()) for o in body.outcomes]
     STORAGE.save_letters(body.client_id, body.cycle, outcomes)
     return {"ok": True, "outcomes": len(outcomes)}
 
 
-@app.post("/parser/manual-movement")
+@app.post("/parser/manual-movement", dependencies=[Depends(require_api_key)])
 def ingest_manual(body: ManualMovementIn):
     entries = [e.model_dump() for e in body.entries]
     STORAGE.save_manual(body.client_id, body.cycle, entries)
     return {"ok": True, "entries": len(entries)}
 
 
-@app.get("/parser/verdict")
+@app.get("/parser/verdict", dependencies=[Depends(require_api_key)])
 def verdict(client_id: str = Query(...), cycle: str = Query(...)):
     current = STORAGE.get_snapshot(client_id, cycle)
     letters = STORAGE.get_letters(client_id, cycle)
@@ -124,7 +125,7 @@ def verdict(client_id: str = Query(...), cycle: str = Query(...)):
     return {"moved": v.moved, "changes": v.changes, "credit_token": v.credit_token}
 
 
-@app.post("/parser/verdict/commit")
+@app.post("/parser/verdict/commit", dependencies=[Depends(require_api_key)])
 def commit(body: CommitIn):
     STORAGE.add_credited(body.client_id, body.change_ids)
     return {"ok": True, "credited": len(body.change_ids)}

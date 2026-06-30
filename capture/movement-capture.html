@@ -70,7 +70,11 @@
       <div><label>Client ID</label><input id="client" placeholder="crc_12345" /></div>
       <div><label>Cycle</label><input id="cycle" placeholder="2026-06" /></div>
     </div>
-    <p class="hint">Set the verdict service URL once. Client ID is the same ID used across enrollment/billing. Cycle defaults to this month.</p>
+    <div class="field" style="margin-top:14px">
+      <label for="revkey">Reviewer access key</label>
+      <input id="revkey" type="password" autocomplete="off" placeholder="Enter your reviewer key" />
+    </div>
+    <p class="hint">Set the verdict service URL once. Client ID is the same ID used across enrollment/billing. Cycle defaults to this month. Your reviewer key is held only for this browser session and is sent with each request.</p>
   </div>
 
   <div class="card">
@@ -100,6 +104,17 @@ const TARGETS = ["current","paid","settled","paid_collection","late_30","late_60
 
 // default cycle = this month, YYYY-MM
 document.getElementById("cycle").value = new Date().toISOString().slice(0,7);
+
+// Reviewer access key — held in JS memory for this session only.
+// Never hardcoded, never written to localStorage.
+let REVIEWER_KEY = "";
+document.getElementById("revkey").addEventListener("input", e => { REVIEWER_KEY = e.target.value; });
+
+// Merge the X-API-Key header onto any request to the verdict service.
+function authHeaders(extra){ return Object.assign({"X-API-Key": REVIEWER_KEY}, extra || {}); }
+
+// Sentinel error so callers can show the reviewer-key message on a 401.
+function unauthorized(){ const e = new Error("unauthorized"); e.unauthorized = true; return e; }
 
 function opt(v){ return `<option value="${v}">${v}</option>`; }
 
@@ -156,7 +171,8 @@ function show(cls, html){
 }
 
 async function post(url, body){
-  const res = await fetch(url, {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const res = await fetch(url, {method:"POST", headers:authHeaders({"Content-Type":"application/json"}), body:JSON.stringify(body)});
+  if(res.status === 401) throw unauthorized();
   if(!res.ok) throw new Error("HTTP " + res.status);
   return res.json();
 }
@@ -168,7 +184,10 @@ async function submitMovement(){
   if(entries.length === 0){ return show("err","<h3>No changes entered</h3><p>Add at least one change, or use “Mark reviewed — no movement”.</p>"); }
   try{
     await post(`${base}/parser/manual-movement`, {client_id, cycle, entries});
-    const v = await (await fetch(`${base}/parser/verdict?client_id=${encodeURIComponent(client_id)}&cycle=${encodeURIComponent(cycle)}`)).json();
+    const vres = await fetch(`${base}/parser/verdict?client_id=${encodeURIComponent(client_id)}&cycle=${encodeURIComponent(cycle)}`, {headers:authHeaders()});
+    if(vres.status === 401) throw unauthorized();
+    if(!vres.ok) throw new Error("HTTP " + vres.status);
+    const v = await vres.json();
     if(v.moved){
       const items = (v.changes||[]).map(c=>`<li>${c.detail}</li>`).join("");
       show("bill", `<h3>✓ Movement recorded — this client will be billed this cycle.</h3>
@@ -177,7 +196,10 @@ async function submitMovement(){
       show("nobill", `<h3>Recorded — but no <em>new</em> billable movement.</h3>
         <p>Everything you logged was already credited in a prior cycle, so this client won't be charged again for it. No double-billing.</p>`);
     }
-  }catch(err){ show("err", `<h3>Couldn't reach the verdict service</h3><p>${err.message}. Check the service URL.</p>`); }
+  }catch(err){
+    if(err.unauthorized){ return show("err", `<h3>Access denied</h3><p>Reviewer key is missing or incorrect — check the key and try again.</p>`); }
+    show("err", `<h3>Couldn't reach the verdict service</h3><p>${err.message}. Check the service URL.</p>`);
+  }
 }
 
 async function markNoMovement(){
@@ -187,7 +209,10 @@ async function markNoMovement(){
     await post(`${base}/parser/manual-movement`, {client_id, cycle, entries:[]});
     show("nobill", `<h3>Logged: reviewed, no movement.</h3>
       <p>This client won't be charged for ${cycle}. The work continues next round.</p>`);
-  }catch(err){ show("err", `<h3>Couldn't reach the verdict service</h3><p>${err.message}.</p>`); }
+  }catch(err){
+    if(err.unauthorized){ return show("err", `<h3>Access denied</h3><p>Reviewer key is missing or incorrect — check the key and try again.</p>`); }
+    show("err", `<h3>Couldn't reach the verdict service</h3><p>${err.message}.</p>`);
+  }
 }
 </script>
 </body>

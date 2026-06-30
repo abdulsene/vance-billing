@@ -14,11 +14,12 @@ returns ok) when their env vars are unset, so this runs in dev with no accounts.
 from __future__ import annotations
 from typing import Literal, Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends
 from pydantic import BaseModel
 
 import senders
 from messages import compose
+from _auth import require_api_key
 
 app = FastAPI(title="Vance Credit — Webhooks")
 
@@ -63,14 +64,14 @@ def health():
     return {"ok": True}
 
 
-@app.post("/crc/invoice")
+@app.post("/crc/invoice", dependencies=[Depends(require_api_key)])
 def crc_invoice(body: InvoiceIn):
     # Forward a single invoice line to CRC. NEVER attaches a plan/subscription.
     forwarded = senders.forward_invoice(body.model_dump())
     return {"ok": True, "forwarded": forwarded}
 
 
-@app.post("/notify")
+@app.post("/notify", dependencies=[Depends(require_api_key)])
 def notify(body: NotifyIn):
     message = compose(body.model_dump())
     sent = senders.send_sms(body.contact.phone, message)
