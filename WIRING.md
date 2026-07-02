@@ -127,6 +127,32 @@ it.
 Certified sends (ops/audit), not to gate any charge. Lob-direct automation (set
 mail class programmatically from `plan_tier`) is the documented future step.
 
+### Configuration guardrails
+
+**`DATABASE_URL` is validated at startup** in every DB-backed service
+(`verdict-service`, `enrollment`, `billing-api`) via a shared `_dbcheck.py`
+(`validate_database_url(..., required=True)`, called before any storage is
+created). If the value is missing, isn't a `postgres://` / `postgresql://` DSN, or
+contains an HTTP / service-path fragment (`http`, `/parser/`, `/billing/`) — the
+classic mistake of pasting a service URL into `DATABASE_URL` — **the service
+refuses to boot** and logs an explained error. A mispaste now fails **visibly in
+the Railway deploy logs** instead of silently at first request (previously a
+runtime 500). `webhooks` has no database and skips the check.
+
+Required env vars per service:
+
+| Service | Required | Notes |
+|---|---|---|
+| **verdict-service** | `DATABASE_URL` (Postgres DSN), `INTERNAL_API_KEY`* | `CAPTURE_ORIGINS` opt (CORS). |
+| **enrollment** | `DATABASE_URL` (Postgres DSN), `NMI_SECURITY_KEY`, `NMI_ENDPOINT` | `ENROLL_CORS_ORIGINS`, `CRC_CREATE_CLIENT_WEBHOOK` opt. |
+| **billing-api** | `DATABASE_URL` (Postgres DSN), `INTERNAL_API_KEY`* | reads `vc_clients`. |
+| **webhooks** | — (stateless; no `DATABASE_URL`) | `INTERNAL_API_KEY`*, `HIGHLEVEL_WEBHOOK_URL`/`TWILIO_*`/`CRC_INVOICE_URL` opt. |
+
+\* `INTERNAL_API_KEY` is fail-open when unset (staged rollout); set it to enforce
+auth on the write endpoints. `DATABASE_URL` must be the Supabase **session-pooler**
+DSN (`postgres://…:5432/…`), the same database across `enrollment` + `billing-api`
+(+ `verdict-service`).
+
 ---
 
 ## 3. Gate `<<placeholder>>` wiring

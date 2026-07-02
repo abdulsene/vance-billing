@@ -29,6 +29,7 @@ from pydantic import BaseModel
 import nmi
 from enroll_core import Client, amount_for_plan, current_cycle
 from storage import InMemoryStorage, PostgresStorage
+from _dbcheck import validate_database_url
 
 log = logging.getLogger("vance.enrollment")
 
@@ -59,18 +60,10 @@ app.add_middleware(
     allow_credentials=False,
 )
 
-def _looks_like_postgres_dsn(dsn: str) -> bool:
-    """True if the DSN looks like a Postgres connection string."""
-    return dsn.startswith(("postgres://", "postgresql://"))
-
-
 _dsn = os.environ.get("DATABASE_URL")
-# Startup validation: a non-Postgres DATABASE_URL (e.g. a service URL pasted in by
-# mistake) would fail at first enrollment. Flag it loudly at boot instead.
-if _dsn and not _looks_like_postgres_dsn(_dsn):
-    log.warning(
-        "DATABASE_URL does not look like a Postgres DSN (starts with %s...) — "
-        "enrollment will fail to persist clients.", _dsn[:12])
+# Fail fast on a mispasted DSN (e.g. a service URL) at boot, before any storage —
+# turns today's silent 500-at-first-enrollment into an explained startup crash.
+validate_database_url(_dsn, required=True)
 STORAGE = PostgresStorage(_dsn) if _dsn else InMemoryStorage()
 
 

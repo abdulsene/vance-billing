@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from verdict_core import Item, Snapshot, LetterOutcome, compute_verdict
 from storage import InMemoryStorage, PostgresStorage
 from _auth import require_api_key
+from _dbcheck import validate_database_url
 
 app = FastAPI(title="Vance Credit — Movement Verdict")
 
@@ -35,6 +36,7 @@ app.add_middleware(
 )
 
 _dsn = os.environ.get("DATABASE_URL")
+validate_database_url(_dsn, required=True)   # fail fast on a mispasted DSN, before any storage
 STORAGE = PostgresStorage(_dsn) if _dsn else InMemoryStorage()
 
 

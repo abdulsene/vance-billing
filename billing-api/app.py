@@ -30,11 +30,13 @@ from pydantic import BaseModel
 
 from billing_core import billing_view, cycle_of_date, now_iso
 from storage import InMemoryStorage, PostgresStorage
+from _dbcheck import validate_database_url
 from _auth import require_api_key
 
 app = FastAPI(title="Vance Credit — Billing API")
 
 _dsn = os.environ.get("DATABASE_URL")
+validate_database_url(_dsn, required=True)   # fail fast on a mispasted DSN, before any storage
 STORAGE = PostgresStorage(_dsn) if _dsn else InMemoryStorage()
 
 

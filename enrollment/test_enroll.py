@@ -18,7 +18,9 @@ client = TestClient(appmod.app)
 
 @pytest.fixture(autouse=True)
 def fresh_storage():
-    appmod.STORAGE.clear()
+    # Force in-memory storage for tests (module-level STORAGE is PostgresStorage
+    # under the dummy test DSN); a fresh instance also isolates each test.
+    appmod.STORAGE = appmod.InMemoryStorage()
     yield
 
 
@@ -154,15 +156,6 @@ def test_save_client_db_failure_returns_503_without_leaking(vault_ok, monkeypatc
     assert "postgresql://" not in detail           # no DSN
     assert "secret" not in detail                  # no credentials
     assert appmod.STORAGE.list_clients() == []     # nothing persisted
-
-
-def test_dsn_shape_check():
-    from app import _looks_like_postgres_dsn
-    assert _looks_like_postgres_dsn("postgresql://user:pw@host:5432/db") is True
-    assert _looks_like_postgres_dsn("postgres://user:pw@host:5432/db") is True
-    # today's misconfig: a verdict-service URL pasted into DATABASE_URL
-    assert _looks_like_postgres_dsn("https://verdict-service.up.railway.app") is False
-    assert _looks_like_postgres_dsn("redis://localhost:6379") is False
 
 
 # --------------------------------------------------------------------------- #

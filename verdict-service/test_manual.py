@@ -9,7 +9,7 @@ client = TestClient(appmod.app)
 
 @pytest.fixture(autouse=True)
 def fresh():
-    appmod.STORAGE.clear()
+    appmod.STORAGE = appmod.InMemoryStorage()   # force in-memory (module STORAGE is Postgres under dummy DSN)
     yield
 
 

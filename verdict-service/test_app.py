@@ -8,7 +8,9 @@ client = TestClient(appmod.app)
 
 @pytest.fixture(autouse=True)
 def fresh_storage():
-    appmod.STORAGE.clear()
+    # Force in-memory storage for tests (module-level STORAGE is PostgresStorage
+    # under the dummy test DSN); a fresh instance also isolates each test.
+    appmod.STORAGE = appmod.InMemoryStorage()
     yield
 
 
