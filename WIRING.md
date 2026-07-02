@@ -60,7 +60,7 @@ now applies to BOTH tiers** (both are movement-billed), not dispute-only.
 | Service | Railway root dir | Env vars | Supabase tables (own / read) |
 |---|---|---|---|
 | **verdict-service** | `verdict-service` | `DATABASE_URL`, `CAPTURE_ORIGINS` *(opt, CORS; default `*`)* | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes`, `vc_manual_movements` |
-| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(default secure.nmi.com)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
+| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(**must match the Collect.js gateway host** — `ecrypt.transactiongateway.com` for this account)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
 | **billing-api** | `billing-api` | `DATABASE_URL` | **owns** `vc_billed_cycles`, `vc_dispatch_rounds`; **reads** `vc_clients` |
 | **webhooks** | `webhooks` | `CRC_INVOICE_URL` *(opt)*, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` *(all opt)* | **none** (stateless) |
 
@@ -88,6 +88,16 @@ data lives on the vault record and is **evaluated at charge time** on every futu
 sale via `customer_vault_id`. The same fields persist as columns on `vc_clients`
 (apply the `alter table ... add column if not exists` block in
 `enrollment/clients_schema.sql` to existing databases).
+
+**`NMI_ENDPOINT` must match the Collect.js gateway host.** Collect.js payment
+tokens are **host-specific**: a token minted by the widget served from one gateway
+host is only valid for vault/sale calls to that same host. For this account that
+host is **`ecrypt.transactiongateway.com`** — set `NMI_ENDPOINT` to it. Leaving it
+at the generic `secure.nmi.com` (the default) mismatches the token and NMI rejects
+the vault call. Enrollment logs a startup WARNING when `NMI_ENDPOINT` is unset or
+`secure.nmi.com`, and a vault decline/error now returns a clean **402**
+("Card could not be stored: …") with the exact NMI `responsetext` logged — never
+an unhandled 500.
 
 **Two services are browser-facing and need CORS.** `enrollment` (the vancecredit.com
 pricing page POSTs to `/enroll`) reads **`ENROLL_CORS_ORIGINS`** — comma-separated,

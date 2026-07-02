@@ -15,6 +15,7 @@ Run:  uvicorn app:app --reload
 Storage: in-memory by default; set DATABASE_URL to use Postgres/Supabase.
 """
 from __future__ import annotations
+import logging
 import os
 import uuid
 from typing import Literal
@@ -29,7 +30,19 @@ import nmi
 from enroll_core import Client, amount_for_plan, current_cycle
 from storage import InMemoryStorage, PostgresStorage
 
+log = logging.getLogger("vance.enrollment")
+
 app = FastAPI(title="Vance Credit — Enrollment")
+
+# Startup sanity: Collect.js tokens are host-specific. If NMI_ENDPOINT is unset or
+# still the generic secure.nmi.com, it very likely does NOT match the gateway host
+# that served Collect.js, and every vault call will be rejected. Make it loud.
+_nmi_endpoint = os.environ.get("NMI_ENDPOINT", "secure.nmi.com")
+if not os.environ.get("NMI_ENDPOINT") or _nmi_endpoint == "secure.nmi.com":
+    log.warning(
+        "NMI_ENDPOINT is %s — Collect.js tokens are host-specific; this must match "
+        "the gateway host that served Collect.js (e.g. ecrypt.transactiongateway.com) "
+        "or vault calls will be rejected.", _nmi_endpoint)
 
 # Browser-facing: the vancecredit.com pricing page POSTs to /enroll cross-origin.
 # Restrict ENROLL_CORS_ORIGINS to the pricing-page origin(s) in production; the
@@ -107,14 +120,21 @@ def enroll(body: EnrollIn):
             address1=body.address1, address2=body.address2,
             city=body.city, state=body.state, zip=body.zip)
     except Exception as exc:  # network / NMI unreachable
+        log.warning("NMI vault request failed (unreachable): %s", exc)
         raise HTTPException(status_code=402,
                             detail=f"vault request failed: {exc}") from exc
 
-    if resp.get("response") != "1" or not resp.get("customer_vault_id"):
-        raise HTTPException(
-            status_code=402,
-            detail=f"card vaulting declined: {resp.get('responsetext', 'unknown error')}")
-    customer_vault_id = resp["customer_vault_id"]
+    # NMI response: "1"=approved, "2"=declined, "3"=error. Anything but an approval
+    # with a vault id is a clean 402 — never an unhandled 500. Log the exact NMI
+    # reason for ops; never leak the security key or the raw request.
+    response = resp.get("response")
+    customer_vault_id = resp.get("customer_vault_id")
+    if response != "1" or not customer_vault_id:
+        responsetext = resp.get("responsetext", "unknown error")
+        log.warning("NMI vault declined/error: response=%s response_code=%s responsetext=%r",
+                    response, resp.get("response_code"), responsetext)
+        raise HTTPException(status_code=402,
+                            detail=f"Card could not be stored: {responsetext}")
 
     # c. Create + persist the client record. NOTHING charged.
     client = Client(

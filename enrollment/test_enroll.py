@@ -88,6 +88,34 @@ def test_nmi_network_error_returns_402(monkeypatch):
     assert appmod.STORAGE.list_clients() == []
 
 
+def test_vault_decline_response_2_returns_clean_402(monkeypatch):
+    # NMI declined the card (response "2") — clean 402, exact reason surfaced, nothing saved.
+    def fake(payment_token, **kw):
+        return {"response": "2", "response_code": "200",
+                "responsetext": "DECLINE", "customer_vault_id": ""}
+    monkeypatch.setattr(nmi, "add_to_vault", fake)
+
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 402
+    detail = r.json()["detail"]
+    assert "Card could not be stored" in detail
+    assert "DECLINE" in detail                            # the NMI responsetext is surfaced
+    assert appmod.STORAGE.list_clients() == []            # no client row saved
+
+
+def test_vault_error_response_3_returns_clean_402(monkeypatch):
+    # NMI gateway error (response "3"), e.g. host-mismatched Collect.js token.
+    def fake(payment_token, **kw):
+        return {"response": "3", "response_code": "300",
+                "responsetext": "Invalid payment token", "customer_vault_id": ""}
+    monkeypatch.setattr(nmi, "add_to_vault", fake)
+
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 402
+    assert "Invalid payment token" in r.json()["detail"]
+    assert appmod.STORAGE.list_clients() == []
+
+
 @pytest.mark.parametrize("bad_tier", ["platinum", "rapid"])  # "rapid" is retired
 def test_bad_plan_tier_returns_422(vault_ok, bad_tier):
     r = client.post("/enroll", json=_body(plan_tier=bad_tier))
