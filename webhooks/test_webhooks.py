@@ -1,13 +1,15 @@
 """
 Webhook tests. All outbound senders are monkeypatched — NO real network.
 """
+import re
 import pytest
 from fastapi.testclient import TestClient
 
 import app as appmod
 import senders
+import messages
 from senders import _money
-from messages import compose
+from messages import compose, cycle_label, sms_segments
 
 client = TestClient(appmod.app)
 
@@ -19,6 +21,13 @@ def clear_sms_env(monkeypatch):
                 "TWILIO_AUTH_TOKEN", "TWILIO_FROM"):
         monkeypatch.delenv(var, raising=False)
     yield
+
+
+@pytest.fixture
+def portal(monkeypatch):
+    # Pin the portal link so rendered copy is deterministic.
+    monkeypatch.setattr(messages, "PORTAL_URL", "https://portal.example.com")
+    return "https://portal.example.com"
 
 
 # --------------------------------------------------------------------------- #
@@ -41,13 +50,11 @@ def test_crc_invoice_forwards_when_url_set(monkeypatch):
     r = client.post("/crc/invoice", json=INVOICE)
     assert r.status_code == 200
     assert r.json() == {"ok": True, "forwarded": True}
-    # never sends a plan/subscription field
     assert not any(k in captured["data"] for k in ("plan", "subscription", "plan_tier", "recurring"))
 
 
 def test_crc_invoice_stubs_when_url_unset(monkeypatch):
     monkeypatch.delenv("CRC_INVOICE_URL", raising=False)
-    # if it tried to POST, this would blow up — proves the stub path is taken
     monkeypatch.setattr(senders, "_post_form",
                         lambda *a, **k: pytest.fail("must not POST when CRC_INVOICE_URL unset"))
     r = client.post("/crc/invoice", json=INVOICE)
@@ -55,7 +62,7 @@ def test_crc_invoice_stubs_when_url_unset(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# /notify
+# /notify handler
 # --------------------------------------------------------------------------- #
 
 def _notify(**over):
@@ -74,7 +81,7 @@ def test_notify_receipt_routes_through_deliver_sms(monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"ok": True, "channel": "highlevel", "sent": True}
     assert captured["to"] == "+15555550123"          # routed to the contact phone
-    assert "moved this cycle" in captured["msg"]      # composed copy passed through
+    assert "improved this cycle" in captured["msg"]   # composed copy passed through
     assert "$99" in captured["msg"]
 
 
@@ -87,7 +94,6 @@ def test_notify_skipped_not_texted(monkeypatch):
 
 
 def test_notify_stub_when_no_channel_configured():
-    # Neither HighLevel nor Twilio configured (cleared by fixture) -> ("stub", False).
     r = client.post("/notify", json=_notify(type="receipt", amount=99))
     assert r.json() == {"ok": True, "channel": "stub", "sent": False}
 
@@ -98,23 +104,68 @@ def test_unknown_notify_type_rejected_422():
 
 
 # --------------------------------------------------------------------------- #
-# Message copy (compose) — formatting fixes
+# Message copy — EXACT rendered strings
 # --------------------------------------------------------------------------- #
 
-def test_receipt_copy_has_no_emdash_and_is_ascii():
-    msg = compose(_notify(type="receipt", amount=99, cycle="2026-06"))
-    assert "—" not in msg                        # no em-dash (was the "â" mojibake)
-    msg.encode("ascii")                               # raises if any non-ASCII byte
+RECEIPT_EXACT = (
+    "Vance Credit: your credit report improved this cycle. True to our "
+    "promise, you're only charged when it moves - so your $99 fee for "
+    "June 2026 was applied. See the details anytime in your client portal: "
+    "https://portal.example.com"
+)
+
+PAYMENT_FAILED_EXACT = (
+    "Vance Credit: your credit report improved this cycle, but we couldn't "
+    "process your $99 fee for June 2026. Update your card in your client "
+    "portal so we can keep working on your file: https://portal.example.com"
+)
 
 
-def test_message_types_distinct_and_worded():
-    receipt = compose(_notify(type="receipt", amount=99))
-    failed = compose(_notify(type="payment_failed"))
-    skipped = compose(_notify(type="skipped", plan_tier="dispute"))
-    assert "moved this cycle" in receipt
-    assert "couldn't process your card" in failed
-    assert "no movement" in skipped and "no charge" in skipped
-    assert len({receipt, failed, skipped}) == 3       # all three distinct
+def test_receipt_exact_string(portal):
+    rendered = compose(_notify(type="receipt", amount=99, cycle="2026-06"))
+    print("\nRECEIPT:", rendered)
+    assert rendered == RECEIPT_EXACT
+
+
+def test_payment_failed_exact_string(portal):
+    rendered = compose(_notify(type="payment_failed", amount=99, cycle="2026-06"))
+    print("\nPAYMENT_FAILED:", rendered)
+    assert rendered == PAYMENT_FAILED_EXACT
+
+
+# --------------------------------------------------------------------------- #
+# cycle_label
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("cycle,label", [
+    ("2026-06", "June 2026"),
+    ("2026-12", "December 2026"),
+    ("garbage", "garbage"),
+])
+def test_cycle_label(cycle, label):
+    assert cycle_label(cycle) == label
+
+
+# --------------------------------------------------------------------------- #
+# Hygiene for EVERY message type
+# --------------------------------------------------------------------------- #
+
+def _all_messages():
+    return {
+        "receipt": compose(_notify(type="receipt", amount=99, cycle="2026-06")),
+        "payment_failed": compose(_notify(type="payment_failed", amount=99, cycle="2026-06")),
+        "skipped": compose(_notify(type="skipped", cycle="2026-06")),
+    }
+
+
+def test_every_message_is_clean(portal):
+    for name, msg in _all_messages().items():
+        msg.encode("ascii")                              # pure ASCII (raises otherwise)
+        assert "—" not in msg, f"{name} has an em-dash"
+        assert "  " not in msg, f"{name} has a double space"
+        # "$" must sit immediately before digits, never after them ("99$")
+        assert re.search(r"\d\$", msg) is None, f"{name} has a digit-then-$"
+        assert sms_segments(msg) <= 2, f"{name} exceeds 2 SMS segments"
 
 
 # --------------------------------------------------------------------------- #
