@@ -7,6 +7,7 @@ without any external account. Tests monkeypatch these functions, so no real
 network is ever hit under pytest.
 """
 from __future__ import annotations
+import json
 import logging
 import os
 import urllib.parse
@@ -28,6 +29,25 @@ def _post_form(url: str, data: dict, *, headers: dict | None = None,
         req.add_header("Authorization", f"Basic {token}")
     with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
         return resp.read().decode("utf-8", "replace")
+
+
+def _post_json(url: str, obj: dict, *, timeout: float = 15.0) -> bool:
+    """POST obj as JSON. Returns True on a 2xx response, False on any failure."""
+    body = json.dumps(obj).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return 200 <= resp.status < 300
+    except Exception as exc:  # network error, non-2xx (HTTPError), timeout, ...
+        log.warning("JSON POST to %s failed: %s", url, exc)
+        return False
+
+
+def _money(a) -> str:
+    """Render a dollar amount without trailing '.0': 99.0 -> '99', 149.5 -> '149.50'."""
+    a = float(a)
+    return f"{a:.0f}" if a == int(a) else f"{a:.2f}"
 
 
 def forward_invoice(payload: dict) -> bool:
@@ -69,3 +89,29 @@ def send_sms(to_phone: str, message: str) -> bool:
                {"To": to_phone, "From": from_, "Body": message},
                auth=(sid, token))
     return True
+
+
+def send_via_highlevel(to_phone: str, message: str) -> bool:
+    """
+    Forward an SMS to the Marketing Hub (HighLevel) inbound webhook, which maps
+    phone -> contact and message -> Send SMS from the verified toll-free number.
+    Returns True on a 2xx, False if unconfigured or on failure.
+    """
+    url = os.environ.get("HIGHLEVEL_WEBHOOK_URL")
+    if not url:
+        log.info("[STUB] HIGHLEVEL_WEBHOOK_URL unset — would forward SMS to %s: %s",
+                 to_phone, message)
+        return False
+    return _post_json(url, {"phone": to_phone, "message": message})
+
+
+def deliver_sms(to_phone: str, message: str) -> tuple[str, bool]:
+    """
+    Route an SMS through the three-tier chain and report which channel handled it:
+      HighLevel (if HIGHLEVEL_WEBHOOK_URL set) -> Twilio (if TWILIO_* set) -> stub.
+    Returns (channel, sent).
+    """
+    if os.environ.get("HIGHLEVEL_WEBHOOK_URL"):
+        return ("highlevel", send_via_highlevel(to_phone, message))
+    sent = send_sms(to_phone, message)   # Twilio when TWILIO_* set, else stub
+    return ("twilio", sent) if sent else ("stub", False)

@@ -73,6 +73,10 @@ def crc_invoice(body: InvoiceIn):
 
 @app.post("/notify", dependencies=[Depends(require_api_key)])
 def notify(body: NotifyIn):
+    # Free-month ("skipped") cycles are NOT texted: poor UX to ping someone about
+    # a non-charge, and it needlessly burns the toll-free messaging ramp.
+    if body.type == "skipped":
+        return {"ok": True, "channel": "none", "sent": False, "note": "skip not texted"}
     message = compose(body.model_dump())
-    sent = senders.send_sms(body.contact.phone, message)
-    return {"ok": True, "channel": "sms", "sent": sent, "message": message}
+    channel, sent = senders.deliver_sms(body.contact.phone, message)
+    return {"ok": True, "channel": channel, "sent": sent}

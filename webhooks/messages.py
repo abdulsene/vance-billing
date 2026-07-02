@@ -7,9 +7,11 @@ because the report moved; the "skipped" copy makes the free month explicit.
 """
 from __future__ import annotations
 
+from senders import _money
+
 
 def receipt_copy(amount, cycle: str) -> str:
-    return (f"Vance Credit: your report moved this cycle — ${amount} for {cycle}. "
+    return (f"Vance Credit: your report moved this cycle - ${_money(amount)} for {cycle}. "
             f"Details in your portal.")
 
 
@@ -27,7 +29,7 @@ def skipped_copy(cycle: str, plan_tier: str = "dispute", message: str = "") -> s
     # generic CROA-safe line (internal review, no charge).
     if message:
         return f"Vance Credit: {message}"
-    return ("Vance Credit: no documented round this cycle — internal review, "
+    return ("Vance Credit: no documented round this cycle - internal review, "
             "no charge. We keep working.")
 
 
