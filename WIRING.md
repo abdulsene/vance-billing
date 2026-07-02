@@ -89,6 +89,19 @@ sale via `customer_vault_id`. The same fields persist as columns on `vc_clients`
 (apply the `alter table ... add column if not exists` block in
 `enrollment/clients_schema.sql` to existing databases).
 
+**`DATABASE_URL` must be the Supabase session-pooler DSN**
+(`postgres://…:5432/…`), pointed at the same database `billing-api` reads. It is
+validated at **startup**: a value that doesn't start with `postgres://` /
+`postgresql://` (e.g. a service URL pasted in by mistake) logs a WARNING at boot —
+`DATABASE_URL does not look like a Postgres DSN …` — instead of failing silently at
+first enrollment. At request time, a persistence failure *after* the card is
+vaulted returns a clean **503** (`"Enrollment is temporarily unavailable. Your card
+was not charged; please try again shortly."`) — never a 500, and the DSN / raw
+`psycopg` error is never leaked to the browser. Because the vault already
+succeeded, that path logs a loud, greppable **`VAULT-ORPHAN`** ERROR
+(`customer_vault_id` + `client_id`) so the orphaned $0 vault entry can be
+reconciled (no money is at risk — enrollment only vaults).
+
 **`NMI_ENDPOINT` must match the Collect.js gateway host.** Collect.js payment
 tokens are **host-specific**: a token minted by the widget served from one gateway
 host is only valid for vault/sale calls to that same host. For this account that

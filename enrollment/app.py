@@ -59,7 +59,18 @@ app.add_middleware(
     allow_credentials=False,
 )
 
+def _looks_like_postgres_dsn(dsn: str) -> bool:
+    """True if the DSN looks like a Postgres connection string."""
+    return dsn.startswith(("postgres://", "postgresql://"))
+
+
 _dsn = os.environ.get("DATABASE_URL")
+# Startup validation: a non-Postgres DATABASE_URL (e.g. a service URL pasted in by
+# mistake) would fail at first enrollment. Flag it loudly at boot instead.
+if _dsn and not _looks_like_postgres_dsn(_dsn):
+    log.warning(
+        "DATABASE_URL does not look like a Postgres DSN (starts with %s...) — "
+        "enrollment will fail to persist clients.", _dsn[:12])
 STORAGE = PostgresStorage(_dsn) if _dsn else InMemoryStorage()
 
 
@@ -149,7 +160,21 @@ def enroll(body: EnrollIn):
                  "state": body.state, "zip": body.zip},
         status="active",
     )
-    STORAGE.save_client(client)
+    # The card is ALREADY vaulted at NMI by this point. If persistence fails we have
+    # an orphaned vault entry (no client row) — a money-adjacent integrity event.
+    # Log it loudly + greppably for reconciliation, and return a clean 503 (never a
+    # 500, and never leak the DSN or raw psycopg error to the browser).
+    try:
+        STORAGE.save_client(client)
+    except Exception as exc:
+        log.error(
+            "VAULT-ORPHAN: card vaulted (customer_vault_id=%s) but save_client failed "
+            "for client_id=%s; manual reconciliation needed: %s",
+            customer_vault_id, client.client_id, exc)
+        raise HTTPException(
+            status_code=503,
+            detail="Enrollment is temporarily unavailable. Your card was not charged; "
+                   "please try again shortly.") from exc
 
     # d. STUB — push the client to CRC (Credit Repair Cloud). Best-effort, never
     #    blocks enrollment, and DOES NOT attach any CRC billing plan/subscription
