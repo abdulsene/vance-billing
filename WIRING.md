@@ -60,7 +60,7 @@ now applies to BOTH tiers** (both are movement-billed), not dispute-only.
 | Service | Railway root dir | Env vars | Supabase tables (own / read) |
 |---|---|---|---|
 | **verdict-service** | `verdict-service` | `DATABASE_URL`, `CAPTURE_ORIGINS` *(opt, CORS; default `*`)* | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes`, `vc_manual_movements` |
-| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(default secure.nmi.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
+| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(default secure.nmi.com)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
 | **billing-api** | `billing-api` | `DATABASE_URL` | **owns** `vc_billed_cycles`, `vc_dispatch_rounds`; **reads** `vc_clients` |
 | **webhooks** | `webhooks` | `CRC_INVOICE_URL` *(opt)*, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` *(all opt)* | **none** (stateless) |
 
@@ -88,6 +88,14 @@ data lives on the vault record and is **evaluated at charge time** on every futu
 sale via `customer_vault_id`. The same fields persist as columns on `vc_clients`
 (apply the `alter table ... add column if not exists` block in
 `enrollment/clients_schema.sql` to existing databases).
+
+**Two services are browser-facing and need CORS.** `enrollment` (the vancecredit.com
+pricing page POSTs to `/enroll`) reads **`ENROLL_CORS_ORIGINS`** — comma-separated,
+default `https://vancecredit.com,https://www.vancecredit.com`, scoped to
+`POST/GET/OPTIONS` + `Content-Type`, no credentials. `verdict-service` (the
+`capture/movement-capture.html` form) reads **`CAPTURE_ORIGINS`** the same way
+(default `*` — tighten it in production). Set each to the exact origin(s) that call
+it.
 
 **Mail class is the only difference between the two tiers** and is handled
 **outside the code**: for launch, the operator sets it manually in CloudMail per

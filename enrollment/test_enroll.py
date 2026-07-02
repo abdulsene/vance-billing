@@ -214,5 +214,30 @@ def test_enroll_without_address_still_succeeds(vault_ok):
                              "city": "", "state": "", "zip": ""}
 
 
+# --------------------------------------------------------------------------- #
+# CORS (browser-facing /enroll)
+# --------------------------------------------------------------------------- #
+
+def test_cors_preflight_allows_vancecredit_origin():
+    # OPTIONS preflight from the pricing page origin must be allowed.
+    r = client.options("/enroll", headers={
+        "Origin": "https://vancecredit.com",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    })
+    assert r.status_code in (200, 204)
+    assert r.headers.get("access-control-allow-origin") == "https://vancecredit.com"
+
+
+def test_cors_preflight_blocks_unknown_origin():
+    # A disallowed origin gets no allow-origin header (browser blocks the request).
+    r = client.options("/enroll", headers={
+        "Origin": "https://evil.com",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type",
+    })
+    assert r.headers.get("access-control-allow-origin") is None
+
+
 def test_health():
     assert client.get("/enroll/health").json() == {"ok": True}

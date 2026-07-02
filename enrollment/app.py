@@ -22,6 +22,7 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import nmi
@@ -29,6 +30,21 @@ from enroll_core import Client, amount_for_plan, current_cycle
 from storage import InMemoryStorage, PostgresStorage
 
 app = FastAPI(title="Vance Credit — Enrollment")
+
+# Browser-facing: the vancecredit.com pricing page POSTs to /enroll cross-origin.
+# Restrict ENROLL_CORS_ORIGINS to the pricing-page origin(s) in production; the
+# default already scopes it to the apex + www vancecredit.com hosts.
+_DEFAULT_CORS = "https://vancecredit.com,https://www.vancecredit.com"
+_cors_origins = [o.strip() for o in
+                 os.environ.get("ENROLL_CORS_ORIGINS", _DEFAULT_CORS).split(",")
+                 if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_methods=["POST", "GET", "OPTIONS"],
+    allow_headers=["Content-Type"],
+    allow_credentials=False,
+)
 
 _dsn = os.environ.get("DATABASE_URL")
 STORAGE = PostgresStorage(_dsn) if _dsn else InMemoryStorage()
