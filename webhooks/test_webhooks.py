@@ -133,6 +133,32 @@ def test_payment_failed_exact_string(portal):
     assert rendered == PAYMENT_FAILED_EXACT
 
 
+PAYMENT_FAILED_NO_AMOUNT_EXACT = (
+    "Vance Credit: your credit report improved this cycle, but we couldn't "
+    "process your payment for June 2026. Update your card in your client "
+    "portal so we can keep working on your file: https://portal.example.com"
+)
+
+SKIPPED_EXACT = ("Vance Credit: no changes posted to your report this cycle - no charge. "
+                 "Your disputes continue next round.")
+
+
+def test_payment_failed_without_amount_is_graceful(portal):
+    # No amount key at all -> "your payment" instead of "your $X fee", still grammatical.
+    rendered = compose({"type": "payment_failed", "cycle": "2026-06"})
+    print("\nPAYMENT_FAILED (no amount):", rendered)
+    assert rendered == PAYMENT_FAILED_NO_AMOUNT_EXACT
+    assert "$" not in rendered            # no dollar figure when amount is absent
+    assert "  " not in rendered           # no double spaces
+    assert sms_segments(rendered) <= 2
+
+
+def test_skipped_independent_of_amount_and_cycle():
+    # Logged-only, but must NEVER raise even with no amount and no cycle.
+    rendered = compose({"type": "skipped"})
+    assert rendered == SKIPPED_EXACT
+
+
 # --------------------------------------------------------------------------- #
 # cycle_label
 # --------------------------------------------------------------------------- #
@@ -200,7 +226,10 @@ def test_deliver_sms_stub():
 # _money
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("val,expected", [(99, "99"), (99.0, "99"), (149.5, "149.50")])
+@pytest.mark.parametrize("val,expected", [
+    (99, "99"), (99.0, "99"), (149.5, "149.50"),
+    ("", ""), (None, ""),                         # total-safe: blank/missing -> ""
+])
 def test_money(val, expected):
     assert _money(val) == expected
 

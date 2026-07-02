@@ -46,8 +46,11 @@ def receipt_copy(amount, cycle: str) -> str:
 
 
 def payment_failed_copy(amount, cycle: str) -> str:
+    # Degrade gracefully when the amount is missing/blank: drop the dollar figure
+    # but keep the sentence grammatical ("your payment" instead of "your $X fee").
+    fee = f"${_money(amount)} fee" if amount not in (None, "") else "payment"
     return (f"Vance Credit: your credit report improved this cycle, but we couldn't "
-            f"process your ${_money(amount)} fee for {cycle_label(cycle)}. Update your "
+            f"process your {fee} for {cycle_label(cycle)}. Update your "
             f"card in your client portal so we can keep working on your file: {PORTAL_URL}")
 
 

@@ -45,7 +45,13 @@ def _post_json(url: str, obj: dict, *, timeout: float = 15.0) -> bool:
 
 
 def _money(a) -> str:
-    """Render a dollar amount without trailing '.0': 99.0 -> '99', 149.5 -> '149.50'."""
+    """Render a dollar amount without trailing '.0': 99.0 -> '99', 149.5 -> '149.50'.
+
+    Total-safe: a missing/blank amount (None or "") renders as "" so no message
+    path can 500 on it.
+    """
+    if a is None or a == "":
+        return ""
     a = float(a)
     return f"{a:.0f}" if a == int(a) else f"{a:.2f}"
 
