@@ -43,9 +43,18 @@ class EnrollIn(BaseModel):
     # Literal -> unknown tiers (including the retired "rapid") are rejected at
     # parse time with 422.
     plan_tier: Literal["dispute", "complete"]
-    name: str
     email: str
     phone: str = ""
+    # Billing name + address for NMI Customer Vault AVS. Optional in the schema so
+    # older/partial payloads still enroll (we do NOT hard-reject on AVS here — a
+    # mismatch is evaluated at charge time), but name/address1/city/state/zip are
+    # normally present. address2 is genuinely optional.
+    name: str = ""
+    address1: str = ""
+    address2: str = ""
+    city: str = ""
+    state: str = ""
+    zip: str = ""
 
 
 class EnrollOut(BaseModel):
@@ -71,11 +80,16 @@ def enroll(body: EnrollIn):
     monthly_amount = amount_for_plan(body.plan_tier)
 
     # b. NMI: vault the tokenized card with NO charge ($0.00). Card never hits us.
-    first, _, last = body.name.partition(" ")
+    #    Pass the billing address so AVS data is stored on the vault record and
+    #    evaluated on every future sale via customer_vault_id.
+    first, last = _split_name(body.name)
     try:
         resp = nmi.add_to_vault(
             body.collect_js_token,
-            email=body.email, first_name=first, last_name=last)
+            email=body.email, phone=body.phone,
+            first_name=first, last_name=last,
+            address1=body.address1, address2=body.address2,
+            city=body.city, state=body.state, zip=body.zip)
     except Exception as exc:  # network / NMI unreachable
         raise HTTPException(status_code=402,
                             detail=f"vault request failed: {exc}") from exc
@@ -94,6 +108,9 @@ def enroll(body: EnrollIn):
         customer_vault_id=customer_vault_id,
         cycle=current_cycle(),
         contact={"email": body.email, "phone": body.phone},
+        billing={"name": body.name, "address1": body.address1,
+                 "address2": body.address2, "city": body.city,
+                 "state": body.state, "zip": body.zip},
         status="active",
     )
     STORAGE.save_client(client)
@@ -107,6 +124,21 @@ def enroll(body: EnrollIn):
     # e.
     return EnrollOut(ok=True, client_id=client.client_id,
                      plan_tier=client.plan_tier, vaulted=True, charged=False)
+
+
+def _split_name(name: str) -> tuple[str, str]:
+    """Split on the LAST space: ('first everything before', 'last remainder').
+
+    No space -> the whole string goes in last_name. Examples:
+      "Mary Jane Smith" -> ("Mary Jane", "Smith")
+      "Jane Doe"        -> ("Jane", "Doe")
+      "Cher"            -> ("", "Cher")
+    """
+    name = (name or "").strip()
+    if " " in name:
+        first, _, last = name.rpartition(" ")
+        return first, last
+    return "", name
 
 
 def _push_to_crc_stub(client: Client) -> None:

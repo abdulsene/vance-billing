@@ -48,6 +48,10 @@ class Client:
     customer_vault_id: str
     cycle: str
     contact: dict                      # {"email": ..., "phone": ...}
+    # Billing address captured at enrollment, stored for the record. It is also
+    # sent to the NMI Customer Vault so AVS runs on every future charge; it is NOT
+    # part of the gate's billing_view. {name, address1, address2, city, state, zip}.
+    billing: dict = field(default_factory=dict)
     status: str = "active"
     created_at: str = field(default_factory=now_iso)
 

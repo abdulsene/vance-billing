@@ -55,12 +55,15 @@ class PostgresStorage:
         return psycopg.connect(self._dsn, autocommit=True)
 
     def save_client(self, client: Client) -> None:
+        b = client.billing
         with self._conn() as c:
             c.execute(
                 """insert into vc_clients
                        (client_id, plan_tier, monthly_amount, customer_vault_id,
-                        cycle, email, phone, status, created_at)
-                   values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        cycle, email, phone,
+                        name, address1, address2, city, state, zip,
+                        status, created_at)
+                   values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                    on conflict (client_id) do update set
                        plan_tier=excluded.plan_tier,
                        monthly_amount=excluded.monthly_amount,
@@ -68,17 +71,27 @@ class PostgresStorage:
                        cycle=excluded.cycle,
                        email=excluded.email,
                        phone=excluded.phone,
+                       name=excluded.name,
+                       address1=excluded.address1,
+                       address2=excluded.address2,
+                       city=excluded.city,
+                       state=excluded.state,
+                       zip=excluded.zip,
                        status=excluded.status""",
                 (client.client_id, client.plan_tier, client.monthly_amount,
                  client.customer_vault_id, client.cycle,
                  client.contact.get("email", ""), client.contact.get("phone", ""),
+                 b.get("name", ""), b.get("address1", ""), b.get("address2", ""),
+                 b.get("city", ""), b.get("state", ""), b.get("zip", ""),
                  client.status, client.created_at))
 
     def get_client(self, client_id: str) -> Optional[Client]:
         with self._conn() as c:
             row = c.execute(
                 """select client_id, plan_tier, monthly_amount, customer_vault_id,
-                          cycle, email, phone, status, created_at
+                          cycle, email, phone,
+                          name, address1, address2, city, state, zip,
+                          status, created_at
                    from vc_clients where client_id=%s""",
                 (client_id,)).fetchone()
         return _client_from_row(row) if row else None
@@ -87,7 +100,9 @@ class PostgresStorage:
         with self._conn() as c:
             rows = c.execute(
                 """select client_id, plan_tier, monthly_amount, customer_vault_id,
-                          cycle, email, phone, status, created_at
+                          cycle, email, phone,
+                          name, address1, address2, city, state, zip,
+                          status, created_at
                    from vc_clients""").fetchall()
         return [_client_from_row(r) for r in rows]
 
@@ -97,4 +112,6 @@ def _client_from_row(row) -> Client:
         client_id=row[0], plan_tier=row[1], monthly_amount=row[2],
         customer_vault_id=row[3], cycle=row[4],
         contact={"email": row[5], "phone": row[6]},
-        status=row[7], created_at=str(row[8]))
+        billing={"name": row[7], "address1": row[8], "address2": row[9],
+                 "city": row[10], "state": row[11], "zip": row[12]},
+        status=row[13], created_at=str(row[14]))

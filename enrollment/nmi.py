@@ -38,11 +38,20 @@ def add_to_vault(payment_token: str, *,
                  endpoint: str | None = None,
                  email: str = "",
                  first_name: str = "",
-                 last_name: str = "") -> dict:
+                 last_name: str = "",
+                 phone: str = "",
+                 address1: str = "",
+                 address2: str = "",
+                 city: str = "",
+                 state: str = "",
+                 zip: str = "") -> dict:
     """
     Vault a Collect.js-tokenized card. Returns NMI's parsed URL-encoded response
     as a flat dict, e.g. {"response": "1", "customer_vault_id": "1234567890",
     "responsetext": "...", "response_code": "100"}.
+
+    The billing address (address1/city/state/zip, etc.) is stored on the vault
+    record so AVS runs on every future sale made via the customer_vault_id.
 
     response == "1" means approved. The caller decides what an approval/decline
     means for the HTTP status; this function only talks to NMI and parses.
@@ -55,9 +64,17 @@ def add_to_vault(payment_token: str, *,
         "security_key": security_key,
         "customer_vault": "add_customer",   # vault only — no sale, no auth, $0.00
         "payment_token": payment_token,     # opaque Collect.js token
-        "email": email,
         "first_name": first_name,
         "last_name": last_name,
+        "email": email,
+        "phone": phone,
+        # AVS billing fields — stored on the vault, evaluated at charge time.
+        "address1": address1,
+        "city": city,
+        "state": state,
+        "zip": zip,
     }
+    if address2:
+        payload["address2"] = address2
     raw = _post_form(url, payload)
     return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}

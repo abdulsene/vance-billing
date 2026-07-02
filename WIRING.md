@@ -60,7 +60,7 @@ now applies to BOTH tiers** (both are movement-billed), not dispute-only.
 | Service | Railway root dir | Env vars | Supabase tables (own / read) |
 |---|---|---|---|
 | **verdict-service** | `verdict-service` | `DATABASE_URL`, `CAPTURE_ORIGINS` *(opt, CORS; default `*`)* | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes`, `vc_manual_movements` |
-| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(default secure.nmi.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` |
+| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(default secure.nmi.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
 | **billing-api** | `billing-api` | `DATABASE_URL` | **owns** `vc_billed_cycles`, `vc_dispatch_rounds`; **reads** `vc_clients` |
 | **webhooks** | `webhooks` | `CRC_INVOICE_URL` *(opt)*, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` *(all opt)* | **none** (stateless) |
 
@@ -77,6 +77,17 @@ so a manual entry and a later snapshot/letter of the same change collapse to a
 single billable change. A manual entry alone is enough — the verdict returns
 `moved:true` with no snapshot ingested. (`CAPTURE_ORIGINS` restricts which origins
 the browser form may call; defaults to `*`.)
+
+**Enrollment captures a billing address for AVS.** `POST /enroll` accepts
+`name, address1, address2, city, state, zip` (all optional in the schema so partial
+payloads still enroll — we do **not** hard-reject on AVS at signup, since subprime
+address mismatches shouldn't block sign-up). The address is sent to the NMI
+**Customer Vault** on `add_customer` (`address1/city/state/zip`, `address2` when
+present, plus `first_name/last_name` split on the client's **last** space) so AVS
+data lives on the vault record and is **evaluated at charge time** on every future
+sale via `customer_vault_id`. The same fields persist as columns on `vc_clients`
+(apply the `alter table ... add column if not exists` block in
+`enrollment/clients_schema.sql` to existing databases).
 
 **Mail class is the only difference between the two tiers** and is handled
 **outside the code**: for launch, the operator sets it manually in CloudMail per
