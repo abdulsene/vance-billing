@@ -258,7 +258,7 @@
     },
     {
       "parameters": {
-        "jsCode": "const text = $json.data ?? $json.body ?? '';\nconst p = Object.fromEntries(new URLSearchParams(text));\nconst c = $('Should Charge?').item.json;\nreturn { json: { ...c, nmi_response: p.response, nmi_text: p.responsetext,\n  transaction_id: p.transactionid, nmi_raw: text } };",
+        "jsCode": "// n8n Code nodes run in a Node sandbox: NO browser globals (URLSearchParams,\n// atob, btoa, etc). Parse the x-www-form-urlencoded NMI body by hand.\n// NMI Vault Sale uses responseFormat:text, so the raw body arrives on $json.data.\nconst raw = $json.data ?? $json.body ?? '';\nconst dec = (s) => { try { return decodeURIComponent(s); } catch (e) { return s; } };\nconst p = {};\nfor (const kv of String(raw).split('&')) {\n  const i = kv.indexOf('=');\n  if (i < 0) continue;\n  const k = dec(kv.slice(0, i));\n  const v = dec(kv.slice(i + 1).replace(/\\+/g, ' '));\n  p[k] = v;\n}\nconst c = $('Should Charge?').item.json;\nreturn { json: {\n  ...c,\n  // structured NMI fields\n  response: p.response,\n  responsetext: p.responsetext,\n  authcode: p.authcode,\n  transactionid: p.transactionid,\n  avsresponse: p.avsresponse ?? '',\n  cvvresponse: p.cvvresponse ?? '',\n  response_code: p.response_code,\n  // aliases the existing downstream nodes read (do not remove)\n  nmi_response: p.response ?? '',\n  nmi_text: p.responsetext ?? '',\n  transaction_id: p.transactionid ?? '',\n  nmi_raw: String(raw)\n} };",
         "mode": "runOnceForEachItem"
       },
       "id": "n_parse",
@@ -308,7 +308,7 @@
         "url": "=<<CRC_INVOICE_WEBHOOK>>",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({client_id:$json.client_id, amount:$json.monthly_amount, plan_tier:$json.plan_tier, cycle:$json.cycle, transaction_id:$json.transaction_id, description:'Vance Credit '+$json.plan_tier+' - '+$json.charge_reason}) }}",
+        "jsonBody": "={{ JSON.stringify({client_id:$json.client_id, amount:$json.monthly_amount, plan_tier:$json.plan_tier, cycle:$json.cycle, transaction_id:$json.transaction_id, avsresponse:$json.avsresponse, cvvresponse:$json.cvvresponse, description:'Vance Credit '+$json.plan_tier+' - '+$json.charge_reason}) }}",
         "options": {}
       },
       "id": "n_crc",
@@ -326,7 +326,7 @@
         "url": "=<<NOTIFY_WEBHOOK>>",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({type:'receipt', client_id:$json.client_id, amount:$json.monthly_amount, cycle:$json.cycle, reason:$json.charge_reason, contact:$json.contact}) }}",
+        "jsonBody": "={{ JSON.stringify({type:'receipt', client_id:$json.client_id, amount:$json.monthly_amount, cycle:$json.cycle, reason:$json.charge_reason, avsresponse:$json.avsresponse, cvvresponse:$json.cvvresponse, contact:$json.contact}) }}",
         "options": {}
       },
       "id": "n_receipt",
@@ -394,7 +394,7 @@
         "url": "=<<NOTIFY_WEBHOOK>>",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({type:'payment_failed', client_id:$json.client_id, amount:$json.monthly_amount, cycle:$json.cycle, nmi_text:$json.nmi_text, contact:$json.contact}) }}",
+        "jsonBody": "={{ JSON.stringify({type:'payment_failed', client_id:$json.client_id, amount:$json.monthly_amount, cycle:$json.cycle, nmi_text:$json.nmi_text, avsresponse:$json.avsresponse, cvvresponse:$json.cvvresponse, contact:$json.contact}) }}",
         "options": {}
       },
       "id": "n_dun",

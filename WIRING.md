@@ -201,6 +201,44 @@ Both are **manual additions in the n8n editor.** They must fire only after a
 **confirmed successful** charge — a declined card must leave both ledgers
 untouched so the client is retried next cycle.
 
+### Gate NMI response handling (Code node)
+
+**n8n Code nodes run in a Node sandbox with NO browser globals.** `URLSearchParams`,
+`atob`, `btoa`, `fetch`, `window`, etc. are **undefined** — referencing them throws
+(`"URLSearchParams is not defined"`) and crashes the node. Parse manually instead.
+
+**NMI returns `x-www-form-urlencoded` text.** The **NMI Vault Sale** HTTP node uses
+`responseFormat: text`, so the raw body arrives on **`$json.data`** (fallback
+`$json.body`). Example body:
+`response=1&responsetext=Approved&authcode=..&transactionid=..&avsresponse=Y&cvvresponse=M&response_code=100`.
+
+The **Parse NMI Response** node splits on `&`, `decodeURIComponent`s each half
+(turning `+` into space), and emits these fields on `json`:
+
+| Field | Meaning |
+|---|---|
+| `response` | `"1"` approved · `"2"` decline · `"3"` error |
+| `responsetext` | human-readable NMI reason |
+| `authcode`, `transactionid`, `response_code` | auth code, txn id, numeric code |
+| `avsresponse`, `cvvresponse` | AVS / CVV result letters (fraud posture) |
+| `nmi_response`, `nmi_text`, `transaction_id` | aliases the existing downstream nodes read — kept for compatibility |
+
+**Approval is strict.** `NMI Approved?` branches only on `response === "1"`
+(exposed as `nmi_response`, strict string compare). **Anything else — `"2"`, `"3"`,
+or missing/empty — routes to `Payment Failed — Dunning`, never to Create CRC
+Invoice / Send Receipt / Commit.** An unparseable or empty body yields
+`nmi_response === ""`, which fails the strict check and routes to dunning, so a
+crash-or-garbage response can **never** fall through to "billed".
+
+**AVS/CVV are surfaced, not enforced.** `avsresponse` + `cvvresponse` are included
+in the receipt, dunning, and CRC-invoice payloads so an AVS-related decline is
+distinguishable in logs. We do **not** hard-block on AVS mismatch (subprime
+customers often mismatch) — the vault stores the address and AVS is evaluated at
+the gateway; the gate only records it.
+
+The parser logic is unit-tested in `test/parse_nmi.test.mjs` (`npm run test:gate`),
+which mirrors the exact code embedded in the node.
+
 ---
 
 ## 4. All Supabase tables (consolidated)

@@ -1,0 +1,8 @@
+{
+  "name": "vance-billing",
+  "private": true,
+  "description": "Gate helper tests (n8n Code-node NMI parser).",
+  "scripts": {
+    "test:gate": "node test/parse_nmi.test.mjs"
+  }
+}
