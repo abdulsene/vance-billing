@@ -118,6 +118,54 @@ def test_vault_error_response_3_returns_clean_402(monkeypatch):
     assert appmod.STORAGE.list_clients() == []
 
 
+# --------------------------------------------------------------------------- #
+# Card-brand backstop (Visa/Mastercard only; Amex/Discover OFF)
+# --------------------------------------------------------------------------- #
+
+def _approved_with_brand(brand):
+    def fake(payment_token, **kw):
+        r = {"response": "1", "responsetext": "SUCCESS",
+             "customer_vault_id": "1234567890", "response_code": "100"}
+        if brand is not None:
+            r["cc_type"] = brand
+        return r
+    return fake
+
+
+@pytest.mark.parametrize("brand", ["Amex", "American Express", "Discover", "Diners", "JCB"])
+def test_enroll_rejects_unsupported_brand_422(monkeypatch, brand):
+    monkeypatch.setattr(nmi, "add_to_vault", _approved_with_brand(brand))
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 422
+    assert r.json()["detail"] == f"Card type not accepted: {brand}. Please use Visa or Mastercard."
+    assert appmod.STORAGE.list_clients() == []          # no client created for a blocked brand
+
+
+@pytest.mark.parametrize("brand", ["Visa", "visa", "MasterCard", "mastercard"])
+def test_enroll_allows_visa_mastercard(monkeypatch, brand):
+    monkeypatch.setattr(nmi, "add_to_vault", _approved_with_brand(brand))
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 200
+    assert len(appmod.STORAGE.list_clients()) == 1
+
+
+def test_enroll_proceeds_when_brand_absent(monkeypatch):
+    # $0 vaults often omit cc_type — we can't block pre-charge, so enrollment
+    # proceeds (front-end guard + runner decline are the net). Backward compatible.
+    monkeypatch.setattr(nmi, "add_to_vault", _approved_with_brand(None))
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 200
+    assert len(appmod.STORAGE.list_clients()) == 1
+
+
+def test_is_accepted_brand_unit():
+    from enroll_core import is_accepted_brand
+    for ok in ("Visa", "visa", "VISA", "MasterCard", "mastercard", "master card", "mc"):
+        assert is_accepted_brand(ok) is True
+    for bad in ("Amex", "American Express", "Discover", "JCB", "", None):
+        assert is_accepted_brand(bad) is False
+
+
 @pytest.mark.parametrize("bad_tier", ["platinum", "rapid"])  # "rapid" is retired
 def test_bad_plan_tier_returns_422(vault_ok, bad_tier):
     r = client.post("/enroll", json=_body(plan_tier=bad_tier))

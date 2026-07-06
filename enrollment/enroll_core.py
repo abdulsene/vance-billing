@@ -20,6 +20,31 @@ PLAN_AMOUNTS: dict[str, int] = {"dispute": 99, "complete": 149}
 BILLING_FIELDS = ("client_id", "plan_tier", "monthly_amount",
                   "customer_vault_id", "cycle", "contact")
 
+# Card brands the processor is currently enabled for. Amex + Discover are OFF
+# pending processor approval. To enable a brand: add it here AND to the front-end
+# ACCEPTED_BRANDS in enrollment/frontend/. Mirror of the front-end brand list.
+ACCEPTED_CARD_BRANDS = frozenset({"visa", "mastercard"})
+
+_BRAND_ALIASES = {
+    "visa": "visa",
+    "mastercard": "mastercard", "master card": "mastercard", "master": "mastercard", "mc": "mastercard",
+    "amex": "amex", "american express": "amex", "americanexpress": "amex",
+    "discover": "discover",
+}
+
+
+def normalize_brand(raw) -> str:
+    """Lower-case + alias a raw card-brand string (NMI cc_type, Collect.js type)."""
+    if not raw:
+        return ""
+    b = str(raw).strip().lower()
+    return _BRAND_ALIASES.get(b, b)
+
+
+def is_accepted_brand(raw) -> bool:
+    """True only for brands the processor is enabled for (Visa/Mastercard today)."""
+    return normalize_brand(raw) in ACCEPTED_CARD_BRANDS
+
 
 class UnknownPlanError(ValueError):
     """Raised when plan_tier is not one of PLAN_AMOUNTS."""

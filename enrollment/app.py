@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import nmi
-from enroll_core import Client, amount_for_plan, current_cycle
+from enroll_core import Client, amount_for_plan, current_cycle, is_accepted_brand
 from storage import InMemoryStorage, PostgresStorage
 from _dbcheck import validate_database_url
 
@@ -139,6 +139,21 @@ def enroll(body: EnrollIn):
                     response, resp.get("response_code"), responsetext)
         raise HTTPException(status_code=402,
                             detail=f"Card could not be stored: {responsetext}")
+
+    # Brand backstop. The front end blocks Amex/Discover before submit, but if NMI
+    # reports a card type outside {Visa, Mastercard}, reject cleanly (422) and do
+    # NOT create a client. NOTE: a $0 add_customer vault often does NOT return a
+    # brand (cc_type is a sale/auth field), so this only fires when a brand is
+    # present; when it's absent the front-end guard + the runner's "payment type
+    # not accepted" decline (→ ops follow-up) are the safety net. Amex/Discover are
+    # OFF pending processor approval — see enroll_core.ACCEPTED_CARD_BRANDS.
+    brand = resp.get("cc_type") or resp.get("card_type") or ""
+    if brand and not is_accepted_brand(brand):
+        log.warning("Enrollment rejected: card brand %r not accepted "
+                    "(vault %s left unbound, no client created).", brand, customer_vault_id)
+        raise HTTPException(
+            status_code=422,
+            detail=f"Card type not accepted: {brand}. Please use Visa or Mastercard.")
 
     # c. Create + persist the client record. NOTHING charged.
     client = Client(

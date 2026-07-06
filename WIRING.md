@@ -117,6 +117,34 @@ the vault call. Enrollment logs a startup WARNING when `NMI_ENDPOINT` is unset o
 ("Card could not be stored: …") with the exact NMI `responsetext` logged — never
 an unhandled 500.
 
+### Accepted card brands — Visa + Mastercard only (runbook)
+
+**Amex + Discover are OFF** pending processor approval. Enrollment is gated to
+Visa/Mastercard in **three** places (keep them in sync):
+
+1. **Front end** (`enrollment/frontend/card-brand-guard.js`, paste target for the
+   pricing-page modal): `const ACCEPTED_BRANDS = ['visa','mastercard']`. Collect.js
+   reports the brand; an unsupported card marks the `ccnumber` field invalid, shows
+   *"We currently accept Visa and Mastercard only. Please use a different card."*,
+   and `submitEnroll()` is blocked (never calls `startPaymentRequest`). A muted
+   *"We accept Visa and Mastercard."* line renders under the CARD DETAILS label.
+   Pure logic lives in `brand_guard.mjs` (tested via `npm run test:brand`).
+2. **Backend backstop** (`enrollment` `POST /enroll`): if NMI reports a card type
+   outside `enroll_core.ACCEPTED_CARD_BRANDS = {visa, mastercard}`, it returns a
+   clean **422** `{"detail":"Card type not accepted: <brand>. Please use Visa or
+   Mastercard."}` and **does not create the client**. Caveat: a `$0` `add_customer`
+   vault often does **not** return a brand (`cc_type` is a sale/auth field), so this
+   only fires when a brand is present.
+3. **Runner net**: when the brand is unknown pre-charge and an Amex/Discover slips
+   through, the first real charge declines with a **"payment type not accepted"**
+   reason. Treat that decline as an **ops follow-up** (contact the client to switch
+   to Visa/Mastercard) — it is not a card-update/dunning-only case.
+
+**To enable a brand** (once the processor approves): add it to `ACCEPTED_BRANDS`
+in `card-brand-guard.js` **and** `brand_guard.mjs`, and to
+`enroll_core.ACCEPTED_CARD_BRANDS` — then redeploy enrollment and re-paste the
+front-end snippet.
+
 **Two services are browser-facing and need CORS.** `enrollment` (the vancecredit.com
 pricing page POSTs to `/enroll`) reads **`ENROLL_CORS_ORIGINS`** — comma-separated,
 default `https://vancecredit.com,https://www.vancecredit.com`, scoped to
