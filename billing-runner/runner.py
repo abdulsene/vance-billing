@@ -1,4 +1,6 @@
-﻿"""Billing runner core. Cannot 500; per-client/stage error capture; null-phone safe; dry run."""
+"""Billing runner â€” the 'gate' as tested code. Cannot 500; every failure is captured
+per client+stage. Handles clients with no phone (skips SMS, never crashes). Supports a
+read-only dry run that proves the path against live data without charging."""
 import logging
 from nmi import parse_nmi
 log = logging.getLogger("billing-runner")
@@ -19,37 +21,46 @@ def _safe(stage, cid, fn):
         return None, err
 
 def _notify(svc, cid, payload, phone, summary):
+    """Send an SMS notify only if we have a phone; missing phone is logged, never fatal."""
     if not phone:
+        log.warning("no phone for client=%s â€” SMS '%s' skipped", cid, payload.get("type"))
         summary["errors"].append({"client_id": cid, "stage": "notify",
-                                  "error": "no phone on client (from /billing/due) - SMS skipped"})
+                                  "error": "no phone on client (from /billing/due) â€” SMS skipped"})
         return
     payload = dict(payload); payload["contact"] = {"phone": phone}
     _, err = _safe("notify", cid, lambda: svc.notify(payload))
     if err: summary["errors"].append(err)
 
-def run_billing(svc, *, date, dry=False):
+def run_billing(svc, *, date: str, dry: bool = False) -> dict:
     summary = {"date": date, "dry_run": dry, "charged": [], "would_charge": [],
                "skipped": [], "declined": [], "orphans": [], "errors": []}
+
     due, err = _safe("get_due", "-", lambda: svc.get_due(date))
     if err:
-        summary["errors"].append(err); summary["fatal"] = "get_due failed"; return summary
+        summary["errors"].append(err); summary["fatal"] = "get_due failed â€” cannot list clients"
+        return summary
+
     for c in (due or {}).get("clients", []):
         cid = c.get("client_id"); cycle = c.get("cycle")
         vault = c.get("customer_vault_id"); amount = c.get("monthly_amount")
         phone = c.get("phone"); tier = c.get("plan_tier")
+
         verdict, err = _safe("get_verdict", cid, lambda: svc.get_verdict(cid, cycle))
         if err:
             summary["errors"].append(err); continue
         if not (verdict or {}).get("moved"):
             summary["skipped"].append(cid); continue
+
         if dry:
             summary["would_charge"].append({"client_id": cid, "cycle": cycle, "amount": amount,
                                             "vault": vault, "has_phone": bool(phone)})
             continue
+
         raw, err = _safe("vault_sale", cid, lambda: svc.vault_sale(vault, amount, orderid=f"{cid}|{cycle}"))
         if err:
             summary["errors"].append(err); continue
         nmi = parse_nmi(raw)
+
         if not nmi["approved"]:
             _notify(svc, cid, {"type": "payment_failed", "client_id": cid, "amount": amount,
                                "cycle": cycle, "reason": nmi.get("responsetext") or "declined"}, phone, summary)
@@ -58,12 +69,15 @@ def run_billing(svc, *, date, dry=False):
                                         "avs": nmi.get("avsresponse"), "cvv": nmi.get("cvvresponse"),
                                         "raw": (nmi.get("raw") or "")[:300]})
             continue
+
         txn = nmi.get("transactionid")
         _, err = _safe("mark_billed", cid, lambda: svc.mark_billed(cid, cycle, txn))
         if err:
-            log.error("CHARGE-ORPHAN client=%s cycle=%s txn=%s: %s", cid, cycle, txn, err["error"])
+            log.error("CHARGE-ORPHAN: client=%s cycle=%s CHARGED (txn=%s) mark_billed FAILED: %s",
+                      cid, cycle, txn, err["error"])
             summary["orphans"].append({"client_id": cid, "cycle": cycle, "txn": txn, "error": err["error"]})
             continue
+
         _safe("commit", cid, lambda: svc.commit(cid, cycle))
         _safe("invoice", cid, lambda: svc.create_invoice({"client_id": cid, "amount": amount,
                                                           "cycle": cycle, "transaction_id": txn, "plan_tier": tier}))

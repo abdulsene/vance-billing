@@ -1,11 +1,11 @@
-﻿"""Billing runner HTTP surface. /run can never return a bare 500."""
+"""Billing runner HTTP surface. /run can never return a bare 500."""
 import os, datetime, logging
 from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from services import Services
 from runner import run_billing
 
-VERSION = "r6-nullphone-dryrun-version"
+VERSION = "r6-nullphone-dryrun-version"   # bump on every deploy to verify what's live
 logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Vance Billing Runner")
 
@@ -20,7 +20,7 @@ def health():
 
 @app.get("/version")
 def version():
-    return {"version": VERSION}
+    return {"version": VERSION}   # public: confirm the deployed build
 
 @app.get("/config-check")
 def config_check(x_api_key: str | None = Header(default=None)):
@@ -33,7 +33,7 @@ def config_check(x_api_key: str | None = Header(default=None)):
 
 @app.post("/run")
 def run(date: str | None = None,
-        dry: bool = Query(default=False),
+        dry: bool = Query(default=False, description="read-only: report would_charge, never charges"),
         x_api_key: str | None = Header(default=None)):
     _auth(x_api_key)
     d = date or datetime.date.today().isoformat()
@@ -46,4 +46,8 @@ def run(date: str | None = None,
             "error": f"{type(e).__name__}: {e}",
             "hint": "call GET /config-check to see which env var is missing/wrong"})
     summary["version"] = VERSION
+    logging.info("run %s dry=%s: charged=%d would=%d skipped=%d declined=%d orphans=%d errors=%d",
+                 d, dry, len(summary["charged"]), len(summary["would_charge"]),
+                 len(summary["skipped"]), len(summary["declined"]),
+                 len(summary["orphans"]), len(summary["errors"]))
     return summary
