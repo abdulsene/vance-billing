@@ -5,6 +5,7 @@ Covers: happy-path vault+persist, NMI failure -> 402 + no client persisted,
 bad plan_tier -> 422, and that the persisted record carries EXACTLY the fields
 the billing gate's /billing/due reads.
 """
+import json
 import re
 import pytest
 from fastapi.testclient import TestClient
@@ -356,6 +357,57 @@ def test_cors_preflight_blocks_unknown_origin():
         "Access-Control-Request-Headers": "content-type",
     })
     assert r.headers.get("access-control-allow-origin") is None
+
+
+# --------------------------------------------------------------------------- #
+# New-enrollment webhook (HighLevel welcome email) — non-blocking, best-effort
+# --------------------------------------------------------------------------- #
+
+def test_enroll_fires_new_enrollment_webhook(vault_ok, monkeypatch):
+    monkeypatch.setenv("ENROLL_WEBHOOK_URL", "https://hl.example.com/new-enrollment")
+    captured = {}
+    def fake_urlopen(req, *a, **k):
+        captured["url"] = req.full_url
+        captured["data"] = req.data
+        class _R:
+            def read(self): return b""
+        return _R()
+    monkeypatch.setattr(appmod, "urlopen", fake_urlopen)
+
+    r = client.post("/enroll", json=_body(name="Mary Jane Smith"))
+    assert r.status_code == 200
+    cid = r.json()["client_id"]
+
+    assert captured["url"] == "https://hl.example.com/new-enrollment"
+    sent = json.loads(captured["data"])
+    assert sent == {
+        "first_name": "Mary",                 # everything before the FIRST space
+        "email": "jane@example.com",
+        "phone": "+15555550123",
+        "plan_tier": "complete",
+        "client_id": cid,
+    }
+
+
+def test_enroll_succeeds_even_if_webhook_raises(vault_ok, monkeypatch):
+    # Non-blocking: a webhook failure must NEVER fail or roll back the enrollment.
+    monkeypatch.setenv("ENROLL_WEBHOOK_URL", "https://hl.example.com/new-enrollment")
+    def boom(req, *a, **k):
+        raise OSError("HighLevel unreachable")
+    monkeypatch.setattr(appmod, "urlopen", boom)
+
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 200
+    assert len(appmod.STORAGE.list_clients()) == 1      # client still durably committed
+
+
+def test_enroll_skips_webhook_when_url_unset(vault_ok, monkeypatch):
+    monkeypatch.delenv("ENROLL_WEBHOOK_URL", raising=False)
+    monkeypatch.setattr(appmod, "urlopen",
+                        lambda *a, **k: pytest.fail("must not POST when ENROLL_WEBHOOK_URL unset"))
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 200
+    assert len(appmod.STORAGE.list_clients()) == 1
 
 
 def test_health():

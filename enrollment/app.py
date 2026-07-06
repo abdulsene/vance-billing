@@ -15,6 +15,7 @@ Run:  uvicorn app:app --reload
 Storage: in-memory by default; set DATABASE_URL to use Postgres/Supabase.
 """
 from __future__ import annotations
+import json
 import logging
 import os
 import uuid
@@ -198,6 +199,15 @@ def enroll(body: EnrollIn):
     #    match CRC's real create-client API when wiring it up.
     _push_to_crc_stub(client)
 
+    # d2. Fire the HighLevel "New Enrollment" welcome-email webhook. Best-effort and
+    #     fully non-blocking: it runs AFTER the client is durably committed, and any
+    #     failure (incl. unset URL) is swallowed so it can never fail/roll back the
+    #     enrollment. first_name = everything before the FIRST space of the name.
+    first_name = (body.name or "").strip().split(" ", 1)[0]
+    _fire_new_enrollment_webhook(
+        first_name=first_name, email=body.email, phone=body.phone,
+        plan_tier=client.plan_tier, client_id=client.client_id)
+
     # e.
     return EnrollOut(ok=True, client_id=client.client_id,
                      plan_tier=client.plan_tier, vaulted=True, charged=False)
@@ -240,3 +250,31 @@ def _push_to_crc_stub(client: Client) -> None:
         urlopen(req, timeout=10).read()  # noqa: S310
     except Exception:
         pass  # stub: log-and-continue in real impl
+
+
+def _fire_new_enrollment_webhook(*, first_name: str, email: str, phone: str,
+                                 plan_tier: str, client_id: str) -> None:
+    """Best-effort POST to the HighLevel "Vance New Enrollment" inbound webhook,
+    which triggers the welcome-email workflow.
+
+    Fully non-blocking: if ENROLL_WEBHOOK_URL is unset it skips silently (debug),
+    and ANY POST failure is logged (warning) and swallowed. A webhook/email hiccup
+    must NEVER fail or roll back an enrollment that is already durably committed.
+    """
+    url = os.environ.get("ENROLL_WEBHOOK_URL")
+    if not url:
+        log.debug("ENROLL_WEBHOOK_URL unset — skipping new-enrollment webhook for %s", client_id)
+        return
+    try:
+        payload = json.dumps({
+            "first_name": first_name,
+            "email": email,
+            "phone": phone,
+            "plan_tier": plan_tier,
+            "client_id": client_id,
+        }).encode()
+        req = Request(url, data=payload, headers={"Content-Type": "application/json"})
+        urlopen(req, timeout=10).read()  # noqa: S310
+    except Exception as exc:
+        log.warning("New-enrollment webhook failed for client_id=%s "
+                    "(enrollment already succeeded): %s", client_id, exc)

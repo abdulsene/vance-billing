@@ -65,7 +65,7 @@ receipts/dunning (see `billing-api/README.md`).
 | Service | Railway root dir | Env vars | Supabase tables (own / read) |
 |---|---|---|---|
 | **verdict-service** | `verdict-service` | `DATABASE_URL`, `CAPTURE_ORIGINS` *(opt, CORS; default `*`)* | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes`, `vc_manual_movements` |
-| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(**must match the Collect.js gateway host** — `ecrypt.transactiongateway.com` for this account)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
+| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(**must match the Collect.js gateway host** — `ecrypt.transactiongateway.com` for this account)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `ENROLL_WEBHOOK_URL` *(opt, welcome email)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
 | **billing-api** | `billing-api` | `DATABASE_URL` | **owns** `vc_billed_cycles`, `vc_dispatch_rounds`; **reads** `vc_clients` |
 | **webhooks** | `webhooks` | `CRC_INVOICE_URL` *(opt)*, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` *(all opt)* | **none** (stateless) |
 
@@ -116,6 +116,16 @@ the vault call. Enrollment logs a startup WARNING when `NMI_ENDPOINT` is unset o
 `secure.nmi.com`, and a vault decline/error now returns a clean **402**
 ("Card could not be stored: …") with the exact NMI `responsetext` logged — never
 an unhandled 500.
+
+**`ENROLL_WEBHOOK_URL` — welcome-email trigger (non-blocking).** On a **successful**
+enrollment (card vaulted + `vc_clients` row committed), enrollment fires a
+best-effort JSON `POST` to `ENROLL_WEBHOOK_URL` — the HighLevel **"Vance New
+Enrollment"** inbound webhook that starts the welcome-email workflow. Body:
+`{ first_name, email, phone, plan_tier, client_id }` (`first_name` = everything
+before the first space of the name). It runs **after** the client is durable and is
+fully **non-blocking**: if the URL is unset it skips silently (debug log), and any
+POST failure is logged (warning) and swallowed — a webhook/email hiccup can **never**
+fail or roll back an enrollment. Leave it unset in dev/test.
 
 ### Accepted card brands — Visa + Mastercard only (runbook)
 
