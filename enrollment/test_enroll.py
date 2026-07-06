@@ -134,11 +134,28 @@ def _approved_with_brand(brand):
 
 @pytest.mark.parametrize("brand", ["Amex", "American Express", "Discover", "Diners", "JCB"])
 def test_enroll_rejects_unsupported_brand_422(monkeypatch, brand):
+    deleted = []
     monkeypatch.setattr(nmi, "add_to_vault", _approved_with_brand(brand))
+    monkeypatch.setattr(nmi, "delete_from_vault",
+                        lambda vid, **kw: deleted.append(vid) or {"response": "1"})
+
     r = client.post("/enroll", json=_body())
     assert r.status_code == 422
     assert r.json()["detail"] == f"Card type not accepted: {brand}. Please use Visa or Mastercard."
     assert appmod.STORAGE.list_clients() == []          # no client created for a blocked brand
+    assert deleted == ["1234567890"]                    # vault entry cleaned up, not kept
+
+
+def test_enroll_rejected_brand_still_422_if_vault_delete_fails(monkeypatch):
+    # A failed cleanup must NOT turn the rejection into a 500 — still a clean 422.
+    monkeypatch.setattr(nmi, "add_to_vault", _approved_with_brand("Amex"))
+    def boom(vid, **kw):
+        raise OSError("NMI unreachable")
+    monkeypatch.setattr(nmi, "delete_from_vault", boom)
+
+    r = client.post("/enroll", json=_body())
+    assert r.status_code == 422
+    assert appmod.STORAGE.list_clients() == []
 
 
 @pytest.mark.parametrize("brand", ["Visa", "visa", "MasterCard", "mastercard"])

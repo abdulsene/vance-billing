@@ -149,8 +149,16 @@ def enroll(body: EnrollIn):
     # OFF pending processor approval — see enroll_core.ACCEPTED_CARD_BRANDS.
     brand = resp.get("cc_type") or resp.get("card_type") or ""
     if brand and not is_accepted_brand(brand):
+        # Best-effort: delete the just-created vault entry so we keep NO record for a
+        # rejected card, then reject cleanly. A delete failure must not turn this into
+        # a 500 — log it for reconciliation and still return the 422.
+        try:
+            nmi.delete_from_vault(customer_vault_id)
+        except Exception as exc:
+            log.error("VAULT-ORPHAN: could not delete vault %s for rejected brand %r; "
+                      "manual cleanup needed: %s", customer_vault_id, brand, exc)
         log.warning("Enrollment rejected: card brand %r not accepted "
-                    "(vault %s left unbound, no client created).", brand, customer_vault_id)
+                    "(vault %s deleted, no client created).", brand, customer_vault_id)
         raise HTTPException(
             status_code=422,
             detail=f"Card type not accepted: {brand}. Please use Visa or Mastercard.")

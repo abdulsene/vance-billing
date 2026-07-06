@@ -78,3 +78,24 @@ def add_to_vault(payment_token: str, *,
         payload["address2"] = address2
     raw = _post_form(url, payload)
     return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
+
+
+def delete_from_vault(customer_vault_id: str, *,
+                      security_key: str | None = None,
+                      endpoint: str | None = None) -> dict:
+    """
+    Remove a Customer Vault entry (customer_vault=delete_customer). Used to clean up
+    a just-created vault when enrollment is rejected (e.g. unaccepted card brand), so
+    no orphaned vault record is kept. Returns NMI's parsed response.
+    """
+    security_key = security_key if security_key is not None else os.environ.get("NMI_SECURITY_KEY", "")
+    endpoint = endpoint or os.environ.get("NMI_ENDPOINT", DEFAULT_ENDPOINT)
+    url = f"https://{endpoint}/api/transact.php"
+
+    payload = {
+        "security_key": security_key,
+        "customer_vault": "delete_customer",
+        "customer_vault_id": customer_vault_id,
+    }
+    raw = _post_form(url, payload)
+    return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}

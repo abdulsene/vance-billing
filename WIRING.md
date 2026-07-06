@@ -132,9 +132,13 @@ Visa/Mastercard in **three** places (keep them in sync):
 2. **Backend backstop** (`enrollment` `POST /enroll`): if NMI reports a card type
    outside `enroll_core.ACCEPTED_CARD_BRANDS = {visa, mastercard}`, it returns a
    clean **422** `{"detail":"Card type not accepted: <brand>. Please use Visa or
-   Mastercard."}` and **does not create the client**. Caveat: a `$0` `add_customer`
-   vault often does **not** return a brand (`cc_type` is a sale/auth field), so this
-   only fires when a brand is present.
+   Mastercard."}`, **does not create the client**, and **deletes the just-created
+   vault entry** (`customer_vault=delete_customer`, best-effort) so no orphaned
+   record is kept. A delete failure logs a `VAULT-ORPHAN` ERROR for manual cleanup
+   but still returns the 422 (never a 500). Caveat: a `$0` `add_customer` vault
+   often does **not** return a brand (`cc_type` is a sale/auth field), so this only
+   fires when a brand is present; when it's absent the front-end guard + the runner
+   net below are the safety net.
 3. **Runner net**: when the brand is unknown pre-charge and an Amex/Discover slips
    through, the first real charge declines with a **"payment type not accepted"**
    reason. Treat that decline as an **ops follow-up** (contact the client to switch
