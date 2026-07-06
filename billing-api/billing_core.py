@@ -12,8 +12,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 # Exactly the fields the gate's /billing/due returns per client.
+# email/phone are also exposed top-level (in addition to nested `contact`) so the
+# billing-runner can read them directly for SMS receipts/dunning.
 BILLING_FIELDS = ("client_id", "plan_tier", "monthly_amount",
-                  "customer_vault_id", "cycle", "contact")
+                  "customer_vault_id", "cycle", "contact", "email", "phone")
 
 _DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
 
@@ -52,4 +54,7 @@ def billing_view(client: Client, cycle: str) -> dict:
         "customer_vault_id": client.customer_vault_id,
         "cycle": cycle,
         "contact": client.contact,
+        # top-level too, so the billing-runner can read them directly for SMS.
+        "email": client.contact.get("email", ""),
+        "phone": client.contact.get("phone", ""),
     }

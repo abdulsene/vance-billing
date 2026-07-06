@@ -45,6 +45,22 @@ def test_due_returns_active_unbilled_client():
     assert clients[0]["monthly_amount"] == 149
 
 
+def test_due_includes_phone_and_email_for_receipts():
+    # The billing-runner needs phone (+ email) to send SMS receipts/dunning.
+    seed()
+    obj = _due()[0]
+    # New: top-level contact fields the runner reads directly.
+    assert obj["phone"] == "+15555550123"
+    assert obj["email"] == "jane@example.com"
+    # Additive: existing fields + nested contact are all still present.
+    assert obj["client_id"] == "c1"
+    assert obj["plan_tier"] == "complete"
+    assert obj["monthly_amount"] == 149
+    assert obj["customer_vault_id"] == "vault_1"
+    assert obj["cycle"] == "2026-06"
+    assert obj["contact"] == {"email": "jane@example.com", "phone": "+15555550123"}
+
+
 def test_mark_billed_makes_client_drop_out_idempotency():
     seed()
     assert len(_due("2026-06-15")) == 1               # due before billing

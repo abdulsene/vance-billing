@@ -53,6 +53,11 @@ The two `◀── ADD` calls are **manual n8n additions** (see §3). Without
 a billed deletion stays "movement" and bills again next cycle. **`verdict/commit`
 now applies to BOTH tiers** (both are movement-billed), not dispute-only.
 
+`GET /billing/due` returns each due client with `client_id, plan_tier,
+monthly_amount, customer_vault_id, cycle, contact{email,phone}` **plus top-level
+`email` + `phone`** — the billing-runner reads those directly to send SMS
+receipts/dunning (see `billing-api/README.md`).
+
 ---
 
 ## 2. Services

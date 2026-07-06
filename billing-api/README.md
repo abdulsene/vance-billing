@@ -17,10 +17,15 @@ owns two new tables for billing idempotency and dispatch tracking.
 ### `GET /billing/due`
 Returns `{ "clients": [ ... ] }`, each item the gate's billing view:
 ```json
-{ "client_id": "...", "plan_tier": "complete", "monthly_amount": 199,
+{ "client_id": "...", "plan_tier": "complete", "monthly_amount": 149,
   "customer_vault_id": "...", "cycle": "2026-06",
-  "contact": { "email": "...", "phone": "..." } }
+  "contact": { "email": "...", "phone": "..." },
+  "email": "...", "phone": "..." }
 ```
+`email` and `phone` are also returned **top-level** (in addition to nested
+`contact`) so the billing-runner can read them directly to send SMS receipts /
+dunning — without them the runner sees `has_phone:false` and no receipt can send.
+
 `cycle` is **YYYY-MM of the `date` param** (the current billing cycle), not the
 client's enrollment cycle — the gate bills monthly. Only `status='active'`
 clients whose `(client_id, current_cycle)` is **not** in `vc_billed_cycles` are
