@@ -1,66 +1,74 @@
-"""Billing runner — the entire 'gate' as tested code. No n8n, no browser globals."""
+﻿"""Billing runner core. Cannot 500; per-client/stage error capture; null-phone safe; dry run."""
 import logging
 from nmi import parse_nmi
 log = logging.getLogger("billing-runner")
 
-def run_billing(svc, *, date: str) -> dict:
-    """svc = a Services adapter (real or fake). Returns a per-client outcome summary.
+def _safe(stage, cid, fn):
+    try:
+        return fn(), None
+    except Exception as e:
+        body = ""
+        try:
+            r = getattr(e, "read", None)
+            if r: body = e.read().decode("utf-8", "replace")[:400]
+        except Exception:
+            pass
+        err = {"client_id": cid, "stage": stage, "error": f"{type(e).__name__}: {e}"}
+        if body: err["response_body"] = body
+        log.error("stage=%s client=%s FAILED: %s %s", stage, cid, err["error"], body)
+        return None, err
 
-    Invariants:
-      * A client is charged ONLY if verdict.moved is true.
-      * mark_billed is called IMMEDIATELY after a successful charge (minimize re-charge window).
-      * A non-approved / empty NMI response NEVER reaches mark_billed -> goes to dunning.
-      * If mark_billed fails after a successful charge, we log CHARGE-ORPHAN (loud) for
-        reconciliation and do NOT continue post-steps.
-      * Post-charge steps (commit/invoice/receipt) are best-effort; their failure cannot
-        cause a re-charge because mark_billed already recorded the cycle.
-    """
-    summary = {"date": date, "charged": [], "skipped": [], "declined": [], "orphans": []}
-    due = svc.get_due(date) or {}
-    for c in due.get("clients", []):
-        cid = c["client_id"]; cycle = c["cycle"]
+def _notify(svc, cid, payload, phone, summary):
+    if not phone:
+        summary["errors"].append({"client_id": cid, "stage": "notify",
+                                  "error": "no phone on client (from /billing/due) - SMS skipped"})
+        return
+    payload = dict(payload); payload["contact"] = {"phone": phone}
+    _, err = _safe("notify", cid, lambda: svc.notify(payload))
+    if err: summary["errors"].append(err)
+
+def run_billing(svc, *, date, dry=False):
+    summary = {"date": date, "dry_run": dry, "charged": [], "would_charge": [],
+               "skipped": [], "declined": [], "orphans": [], "errors": []}
+    due, err = _safe("get_due", "-", lambda: svc.get_due(date))
+    if err:
+        summary["errors"].append(err); summary["fatal"] = "get_due failed"; return summary
+    for c in (due or {}).get("clients", []):
+        cid = c.get("client_id"); cycle = c.get("cycle")
         vault = c.get("customer_vault_id"); amount = c.get("monthly_amount")
         phone = c.get("phone"); tier = c.get("plan_tier")
-
-        verdict = svc.get_verdict(cid, cycle) or {}
-        if not verdict.get("moved"):
-            summary["skipped"].append(cid)
-            continue  # no movement, no charge — and we don't text "skipped"
-
-        raw = svc.vault_sale(vault, amount, orderid=f"{cid}|{cycle}")
+        verdict, err = _safe("get_verdict", cid, lambda: svc.get_verdict(cid, cycle))
+        if err:
+            summary["errors"].append(err); continue
+        if not (verdict or {}).get("moved"):
+            summary["skipped"].append(cid); continue
+        if dry:
+            summary["would_charge"].append({"client_id": cid, "cycle": cycle, "amount": amount,
+                                            "vault": vault, "has_phone": bool(phone)})
+            continue
+        raw, err = _safe("vault_sale", cid, lambda: svc.vault_sale(vault, amount, orderid=f"{cid}|{cycle}"))
+        if err:
+            summary["errors"].append(err); continue
         nmi = parse_nmi(raw)
         if not nmi["approved"]:
-            svc.notify({"type": "payment_failed", "client_id": cid, "amount": amount,
-                        "cycle": cycle, "reason": nmi.get("responsetext") or "declined",
-                        "contact": {"phone": phone}})
+            _notify(svc, cid, {"type": "payment_failed", "client_id": cid, "amount": amount,
+                               "cycle": cycle, "reason": nmi.get("responsetext") or "declined"}, phone, summary)
             summary["declined"].append({"client_id": cid, "reason": nmi.get("responsetext"),
-                                        "avs": nmi.get("avsresponse")})
+                                        "response_code": nmi.get("response_code"),
+                                        "avs": nmi.get("avsresponse"), "cvv": nmi.get("cvvresponse"),
+                                        "raw": (nmi.get("raw") or "")[:300]})
             continue
-
         txn = nmi.get("transactionid")
-        try:
-            svc.mark_billed(cid, cycle, txn)
-        except Exception as e:
-            log.error("CHARGE-ORPHAN: client=%s cycle=%s CHARGED (txn=%s) but mark_billed FAILED "
-                      "— reconcile before next run to avoid re-charge: %s", cid, cycle, txn, e)
-            summary["orphans"].append({"client_id": cid, "cycle": cycle, "txn": txn})
+        _, err = _safe("mark_billed", cid, lambda: svc.mark_billed(cid, cycle, txn))
+        if err:
+            log.error("CHARGE-ORPHAN client=%s cycle=%s txn=%s: %s", cid, cycle, txn, err["error"])
+            summary["orphans"].append({"client_id": cid, "cycle": cycle, "txn": txn, "error": err["error"]})
             continue
-
-        # best-effort post-charge (cannot cause re-charge; cycle already recorded)
-        for stage, fn in (
-            ("commit",  lambda: svc.commit(cid, cycle)),
-            ("invoice", lambda: svc.create_invoice({"client_id": cid, "amount": amount,
-                                                    "cycle": cycle, "transaction_id": txn,
-                                                    "plan_tier": tier})),
-            ("receipt", lambda: svc.notify({"type": "receipt", "client_id": cid, "amount": amount,
-                                            "cycle": cycle, "reason": "report moved",
-                                            "contact": {"phone": phone}})),
-        ):
-            try:
-                fn()
-            except Exception as e:
-                log.warning("post-charge '%s' failed for client=%s (charge OK, no re-charge): %s", stage, cid, e)
-
+        _safe("commit", cid, lambda: svc.commit(cid, cycle))
+        _safe("invoice", cid, lambda: svc.create_invoice({"client_id": cid, "amount": amount,
+                                                          "cycle": cycle, "transaction_id": txn, "plan_tier": tier}))
+        _notify(svc, cid, {"type": "receipt", "client_id": cid, "amount": amount,
+                           "cycle": cycle, "reason": "report moved"}, phone, summary)
         summary["charged"].append({"client_id": cid, "txn": txn, "amount": amount,
                                    "avs": nmi.get("avsresponse"), "cvv": nmi.get("cvvresponse")})
     return summary
