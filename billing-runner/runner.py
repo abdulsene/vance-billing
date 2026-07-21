@@ -1,7 +1,7 @@
 """Billing runner â€” the 'gate' as tested code. Cannot 500; every failure is captured
 per client+stage. Handles clients with no phone (skips SMS, never crashes). Supports a
 read-only dry run that proves the path against live data without charging."""
-import logging
+import os, logging
 from nmi import parse_nmi
 log = logging.getLogger("billing-runner")
 
@@ -30,6 +30,26 @@ def _notify(svc, cid, payload, phone, summary):
     payload = dict(payload); payload["contact"] = {"phone": phone}
     _, err = _safe("notify", cid, lambda: svc.notify(payload))
     if err: summary["errors"].append(err)
+
+def _alert_orphan(svc, cid, cycle, txn, err, summary):
+    """A charge-orphan is money taken with the cycle unrecorded - the loudest failure we have.
+    Always log it; additionally page ops by SMS if ORPHAN_ALERT_PHONE is set. The alert is
+    strictly best-effort: a failed alert must never raise or mask the orphan itself."""
+    log.error("CHARGE-ORPHAN: client=%s cycle=%s CHARGED (txn=%s) mark_billed FAILED: %s",
+              cid, cycle, txn, err["error"])
+    ops = os.environ.get("ORPHAN_ALERT_PHONE")
+    if not ops:
+        return
+    try:
+        svc.notify({"type": "payment_failed", "client_id": "OPS-ALERT", "amount": 0,
+                    "cycle": cycle,
+                    "reason": f"CHARGE-ORPHAN client={cid} txn={txn} - reconcile now",
+                    "contact": {"phone": ops}})
+    except Exception as e:
+        log.error("orphan alert FAILED (orphan still recorded) client=%s txn=%s: %s: %s",
+                  cid, txn, type(e).__name__, e)
+        summary["errors"].append({"client_id": cid, "stage": "orphan_alert",
+                                  "error": f"{type(e).__name__}: {e}"})
 
 def run_billing(svc, *, date: str, dry: bool = False) -> dict:
     summary = {"date": date, "dry_run": dry, "charged": [], "would_charge": [],
@@ -73,8 +93,7 @@ def run_billing(svc, *, date: str, dry: bool = False) -> dict:
         txn = nmi.get("transactionid")
         _, err = _safe("mark_billed", cid, lambda: svc.mark_billed(cid, cycle, txn))
         if err:
-            log.error("CHARGE-ORPHAN: client=%s cycle=%s CHARGED (txn=%s) mark_billed FAILED: %s",
-                      cid, cycle, txn, err["error"])
+            _alert_orphan(svc, cid, cycle, txn, err, summary)
             summary["orphans"].append({"client_id": cid, "cycle": cycle, "txn": txn, "error": err["error"]})
             continue
 

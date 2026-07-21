@@ -117,5 +117,25 @@ def test_dry_run_reports_would_charge_and_never_touches_money():
     assert "mark_billed" not in names(s)         # NO writes
     assert out["charged"]==[]
 
+# ---- charge-orphan ops alert (r7) ----
+def test_orphan_pages_ops_when_alert_phone_set(monkeypatch):
+    monkeypatch.setenv("ORPHAN_ALERT_PHONE", "+12025550147")
+    s=FakeSvc([C()],fail_on={"mark_billed"}); out=run_billing(s,date="2026-07-05")
+    assert ("notify","payment_failed","OPS-ALERT") in s.calls      # ops paged
+    assert out["orphans"][0]["txn"]=="10598765432"                 # orphan still recorded
+    assert "commit" not in names(s)                                # post-steps still skipped
+
+def test_orphan_recorded_without_alert_phone(monkeypatch):
+    monkeypatch.delenv("ORPHAN_ALERT_PHONE", raising=False)
+    s=FakeSvc([C()],fail_on={"mark_billed"}); out=run_billing(s,date="2026-07-05")
+    assert out["orphans"][0]["txn"]=="10598765432"                 # orphan still recorded
+    assert not [c for c in s.calls if c[0]=="notify"]              # no alert attempted
+
+def test_failing_orphan_alert_never_masks_the_orphan(monkeypatch):
+    monkeypatch.setenv("ORPHAN_ALERT_PHONE", "+12025550147")
+    s=FakeSvc([C()],fail_on={"mark_billed","notify"}); out=run_billing(s,date="2026-07-05")
+    assert out["orphans"][0]["txn"]=="10598765432"                 # alert blew up, orphan survives
+    assert any(e["stage"]=="orphan_alert" for e in out["errors"])
+
 def test_parser_sanity():
     assert parse_nmi(APPROVED)["approved"] and not parse_nmi("")["approved"]

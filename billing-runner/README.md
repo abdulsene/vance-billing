@@ -21,24 +21,37 @@ For each client returned by `billing-api /billing/due`:
 - A non-approved or unreadable NMI response can never reach `mark-billed`.
 - `mark-billed` runs immediately after a successful charge. If it fails, we log
   `CHARGE-ORPHAN` (loud, greppable) with the transaction id for reconciliation and skip
-  post-steps — a human resolves it before the next run.
+  post-steps — a human resolves it before the next run. If `ORPHAN_ALERT_PHONE` is set, the
+  runner also texts that number (`client_id: OPS-ALERT`) so nobody has to be watching logs.
+  The alert is best-effort: if the SMS itself fails, it is recorded as an `orphan_alert`
+  error and the orphan is still reported — alerting can never mask the orphan.
 - Post-charge steps (commit/invoice/receipt) are best-effort: their failure cannot cause a
   re-charge because the cycle is already recorded.
 - `orderid = client_id|cycle` gives NMI-side duplicate-transaction protection as defense in depth.
 
 ## Run it
+- **Preflight (check before you trust a run):** `GET /preflight` with header
+  `X-API-Key: <INTERNAL_API_KEY>`. Returns `{"ready": bool, "version", "checks": [...]}` — one
+  row per required env var plus a live `GET /health` probe (8s timeout) of verdict-service,
+  billing-api and webhooks. `ready` is true only when every required row is ok. A dead
+  dependency is a red row, never a 500. The `orphan alert` row reports whether
+  `ORPHAN_ALERT_PHONE` is set; it is informational and does not gate `ready`.
 - **Manual / self-test:** `POST /run` with header `X-API-Key: <INTERNAL_API_KEY>`
   (optional `?date=YYYY-MM-DD`). Returns a per-client summary.
 - **Scheduled:** Railway Cron runs `python run.py` daily. Exits non-zero if any orphan, so a
   failed cron surfaces a charged-but-unmarked client.
 
-## Env vars (all required)
-`VERDICT_BASE`, `BILLING_BASE`, `WEBHOOKS_BASE` (full https URLs),
+## Env vars
+**Required:** `VERDICT_BASE`, `BILLING_BASE`, `WEBHOOKS_BASE` (full https URLs),
 `INTERNAL_API_KEY`, `NMI_ENDPOINT` (`ecrypt.transactiongateway.com`), `NMI_SECURITY_KEY`.
 
+**Optional:** `ORPHAN_ALERT_PHONE` — E.164 number paged by SMS when a charge-orphan occurs.
+Unset means orphans are logged only. `GET /preflight` shows which of these are in place.
+
 ## Tests
-`python -m pytest tests/ -q` — 10 behavioral tests covering charge, skip, decline, error,
-empty-response, orphan handling, post-step failures, idempotency key, and multi-client runs.
+`python -m pytest tests/ -q` — behavioral tests covering charge, skip, decline, error,
+empty-response, orphan handling (including the ops alert), null-phone clients, dry run,
+post-step failures, idempotency key, and multi-client runs.
 
 ## Why this exists
 n8n broke the billing path twice (a browser-global crash in a Code node, and an orchestrator
