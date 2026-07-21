@@ -2,8 +2,9 @@
   "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
     "startCommand": "python run.py",
-    "cronSchedule": "25 22 * * *",
+    "cronSchedule": "51 22 * * *",
     "restartPolicyType": "NEVER"
   }
 }
+
 
