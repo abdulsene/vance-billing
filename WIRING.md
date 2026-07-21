@@ -65,7 +65,7 @@ receipts/dunning (see `billing-api/README.md`).
 | Service | Railway root dir | Env vars | Supabase tables (own / read) |
 |---|---|---|---|
 | **verdict-service** | `verdict-service` | `DATABASE_URL`, `CAPTURE_ORIGINS` *(opt, CORS; default `*`)* | **owns** `vc_snapshots`, `vc_letters`, `vc_credited_changes`, `vc_manual_movements` |
-| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(**must match the Collect.js gateway host** — `ecrypt.transactiongateway.com` for this account)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `ENROLL_WEBHOOK_URL` *(opt, welcome email)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)* | **owns/writes** `vc_clients` (incl. billing address) |
+| **enrollment** | `enrollment` | `DATABASE_URL`, `NMI_SECURITY_KEY`, `NMI_ENDPOINT` *(**must match the Collect.js gateway host** — `ecrypt.transactiongateway.com` for this account)*, `ENROLL_CORS_ORIGINS` *(opt, CORS; default vancecredit.com)*, `ENROLL_WEBHOOK_URL` *(opt, welcome email)*, `CRC_CREATE_CLIENT_WEBHOOK` *(opt)*, `CRC_PORTAL_URL` *(opt, confirmation-page signup link; default `https://vancecredit.getcredithelpnow.com/start`. **Not** the same as webhooks' `PORTAL_URL` login link)* | **owns/writes** `vc_clients` (incl. billing address) |
 | **billing-api** | `billing-api` | `DATABASE_URL` | **owns** `vc_billed_cycles`, `vc_dispatch_rounds`; **reads** `vc_clients` |
 | **webhooks** | `webhooks` | `CRC_INVOICE_URL` *(opt)*, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM` *(all opt)* | **none** (stateless) |
 
