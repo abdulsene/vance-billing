@@ -45,6 +45,7 @@ billable next cycle.
 | `POST` | `/parser/letters` | your existing bureau-response-letter parser |
 | `GET`  | `/parser/verdict?client_id=&cycle=` | the billing gate (Dispute branch) |
 | `POST` | `/parser/verdict/commit` | the billing gate, **after** a successful NMI charge |
+| `GET`  | `/parser/health` | Railway + billing-runner `/preflight` (no API key required) |
 
 `GET /parser/verdict` returns:
 ```json

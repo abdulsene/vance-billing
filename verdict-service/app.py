@@ -8,6 +8,7 @@ POST /parser/letters          ingest bureau response-letter outcomes
 POST /parser/manual-movement  reviewer-confirmed changes at CRC re-import (Path B)
 GET  /parser/verdict          the gate calls this: did the report move this cycle?
 POST /parser/verdict/commit   the gate calls this AFTER a charge succeeds
+GET  /parser/health           liveness probe (unauthenticated, like the other services)
 
 Run:  uvicorn app:app --reload
 Storage: in-memory by default; set DATABASE_URL to use Postgres/Supabase.
@@ -89,6 +90,13 @@ class CommitIn(BaseModel):
     client_id: str
     change_ids: list[str]
     transaction_id: Optional[str] = None
+
+
+@app.get("/parser/health")
+def health():
+    # Deliberately NOT behind require_api_key: probes (Railway, billing-runner
+    # /preflight) must be able to check liveness without holding a credential.
+    return {"ok": True, "service": "verdict"}
 
 
 @app.post("/parser/snapshot", dependencies=[Depends(require_api_key)])

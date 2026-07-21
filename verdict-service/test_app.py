@@ -49,6 +49,18 @@ def test_verdict_false_when_no_snapshot():
     assert "no snapshot" in body["reason"]
 
 
+def test_health_is_200_and_needs_no_api_key(monkeypatch):
+    # Set the key so require_api_key actually enforces (it fails open when unset) --
+    # otherwise this test would pass even if /parser/health were behind auth.
+    monkeypatch.setenv("INTERNAL_API_KEY", "sekret")
+    assert client.get("/parser/verdict",
+                      params={"client_id": "c1", "cycle": "2026-06"}).status_code == 401
+
+    r = client.get("/parser/health")            # no X-API-Key header
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "service": "verdict"}
+
+
 def test_letters_ingest_then_movement():
     client.post("/parser/snapshot", json=_snap("2026-05", [COLL]))
     client.post("/parser/snapshot", json=_snap("2026-06", [COLL]))  # snapshot lags

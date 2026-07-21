@@ -32,8 +32,9 @@ For each client returned by `billing-api /billing/due`:
 ## Run it
 - **Preflight (check before you trust a run):** `GET /preflight` with header
   `X-API-Key: <INTERNAL_API_KEY>`. Returns `{"ready": bool, "version", "checks": [...]}` — one
-  row per required env var plus a live `GET /health` probe (8s timeout) of verdict-service,
-  billing-api and webhooks. `ready` is true only when every required row is ok. A dead
+  row per required env var plus a live health probe (8s timeout) of verdict-service
+  (`/parser/health`), billing-api (`/billing/health`) and webhooks (`/webhooks/health`) —
+  each service namespaces its own health route. `ready` is true only when every required row is ok. A dead
   dependency is a red row, never a 500. The `orphan alert` row reports whether
   `ORPHAN_ALERT_PHONE` is set; it is informational and does not gate `ready`.
 - **Manual / self-test:** `POST /run` with header `X-API-Key: <INTERNAL_API_KEY>`

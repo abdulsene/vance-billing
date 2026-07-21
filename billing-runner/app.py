@@ -34,12 +34,22 @@ def config_check(x_api_key: str | None = Header(default=None)):
 REQUIRED_ENV = ["VERDICT_BASE","BILLING_BASE","WEBHOOKS_BASE","NMI_ENDPOINT","INTERNAL_API_KEY","NMI_SECURITY_KEY"]
 SECRET_ENV   = {"INTERNAL_API_KEY","NMI_SECURITY_KEY"}   # never echoed back, only set/MISSING
 
-def _probe(name, base):
-    """GET <base>/health. Any failure is a red row, never an exception."""
+# (label, env var, health path) - each service namespaces its own health route.
+PROBE_TARGETS = [
+    ("verdict-service /parser/health",  "VERDICT_BASE",  "/parser/health"),
+    ("billing-api /billing/health",     "BILLING_BASE",  "/billing/health"),
+    ("webhooks /webhooks/health",       "WEBHOOKS_BASE", "/webhooks/health"),
+]
+
+def _probe(name, base, path):
+    """GET <base><path>. Any failure is a red row, never an exception.
+
+    Each service namespaces its own health route (/parser/health, /billing/health,
+    /webhooks/health) - a bare /health 404s and shows up as a false failure."""
     if not base:
         return {"check": name, "kind": "probe", "required": True, "ok": False,
                 "detail": "MISSING - base URL not set, cannot probe"}
-    url = f"{base.rstrip('/')}/health"
+    url = f"{base.rstrip('/')}{path}"
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -60,9 +70,8 @@ def preflight(x_api_key: str | None = Header(default=None)):
         v = os.environ.get(k)
         checks.append({"check": k, "kind": "env", "required": True, "ok": bool(v),
                        "detail": ("set" if k in SECRET_ENV else v) if v else "MISSING"})
-    checks.append(_probe("verdict-service /health", os.environ.get("VERDICT_BASE")))
-    checks.append(_probe("billing-api /health", os.environ.get("BILLING_BASE")))
-    checks.append(_probe("webhooks /health", os.environ.get("WEBHOOKS_BASE")))
+    for label, env, path in PROBE_TARGETS:
+        checks.append(_probe(label, os.environ.get(env), path))
 
     ops = os.environ.get("ORPHAN_ALERT_PHONE")   # informational: does not gate readiness
     checks.append({"check": "orphan alert", "kind": "info", "required": False, "ok": bool(ops),
