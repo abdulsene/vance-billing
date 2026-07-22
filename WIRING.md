@@ -202,11 +202,13 @@ DSN (`postgres://…:5432/…`), the same database across `enrollment` + `billin
 
 ### Known issue — Nixpacks build-time secrets
 
-*Recorded 2026-07-21. Open; fix planned below, not yet started.*
+*Recorded 2026-07-21. **In progress** — `billing-runner` migrated to Railpack
+2026-07-22; four services still pinned to Nixpacks. See the checklist below.*
 
-All five services build with `"builder": "NIXPACKS"`. **There is no Dockerfile in
-this repo** — Railway's Nixpacks builder generates one on every build, and that
-generated file is the source of the build warnings:
+The four services still pinned to `"builder": "NIXPACKS"` are affected
+(`verdict-service`, `billing-api`, `webhooks`, `enrollment`). **There is no
+Dockerfile in this repo** — Railway's Nixpacks builder generates one on every
+build, and that generated file is the source of the build warnings:
 
 | Warning | Where it comes from |
 |---|---|
@@ -225,35 +227,48 @@ is public PyPI only — no private index, no `git+ssh` dependency, no `pip.conf`
 `.netrc`. The build is `pip install -r requirements.txt` and nothing else. The
 secrets are present purely because Railway injects all variables by default.
 
-#### Planned fix — migrate to committed per-service Dockerfiles
+#### Planned fix — migrate the builder `NIXPACKS` → `RAILPACK`
 
-Switch each service to a checked-in `Dockerfile` + `"builder": "DOCKERFILE"` in its
-`railway.json`. We then control exactly what enters the image: no secret `ARG`/`ENV`,
-secrets arrive only via Railway's **runtime** env injection, and `$NIXPACKS_PATH`
-disappears by construction.
+**Nixpacks is deprecated on Railway. Railpack is the current default builder, and it
+passes variables as BuildKit secrets** — they never enter build logs or image layers,
+which is exactly the exposure above. No Dockerfile needed: this is a one-line change
+per service.
 
-**Staged, one service at a time — never all five in one push.** There is no local
-Docker/Nixpacks/Railway CLI on the maintainer machine, so a Dockerfile's first real
-test is the deploy itself; a big-bang change risks taking down the money path with
-no verification step in between.
+```jsonc
+"build": { "builder": "RAILPACK" }   // was "NIXPACKS"
+```
 
-- [ ] **Precondition:** first unattended `billing-cron` run (13:00 UTC, `0 13 * * *`)
-      observed clean — before starting any migration.
-- [ ] **1. `billing-runner`** — migrate first. Verify immediately after deploy:
-      `GET /version` returns the expected build, `GET /preflight` returns
-      `ready: true`. Then **watch the next scheduled 13:00 UTC cron run.**
-      ⚠️ `billing-cron` shares the `billing-runner/` directory (`railway.cron.json`,
-      `startCommand: python run.py`), so **any billing-runner Dockerfile change also
-      changes the cron service's build.** Verify **both** the web service and the
-      cron run after this step.
+**`billing-cron` is already proof this works on our code.** Its config
+(`billing-runner/railway.cron.json`) has **no `build` block at all**, so it never
+pinned a builder and already builds with the default — `railpack-v0.31.1` — against
+the *same* `billing-runner/` source tree. Railpack is therefore known-good for this
+directory's dependencies before we touch anything.
+
+⚠️ **Builder pins are per config file, not per directory.** `billing-runner` reads
+`railway.json` (pinned `NIXPACKS`); `billing-cron` reads `railway.cron.json` (no pin
+→ railpack). Changing `railway.json` moves the **web service only** — it does not
+change the cron's builder. But the two share the source tree, so any *code* change
+still affects both. Verify both after stage 1 regardless.
+
+- [x] **Precondition:** first unattended `billing-cron` run observed clean —
+      **2026-07-22 09:02 EDT**. ✅
+- [x] **1. `billing-runner`** — `railway.json` → `RAILPACK` (this session).
+      Verify: `GET /version` returns `r7-orphan-alert-preflight`, `GET /preflight`
+      with `X-API-Key` returns `ready: true`, build log says **railpack** and shows
+      **no `SecretsUsedInArgOrEnv`**. Then **watch the next 13:00 UTC cron run**
+      (see the shared-directory note above).
 - [ ] **2. `verdict-service`** — verify `GET /parser/health`.
 - [ ] **3. `billing-api`** — verify `GET /billing/health`.
 - [ ] **4. `webhooks`** — verify `GET /webhooks/health`.
 - [ ] **5. `enrollment`** — verify `GET /enroll/health` **and** a real
       `GET /enroll/confirmation/{client_id}` render.
 
-Each step: deploy alone, verify, let it sit through one normal day before starting
-the next.
+**One service per day.** Deploy alone, verify, let it sit through one normal day
+before starting the next. Rollback is the same one-line revert to `"NIXPACKS"`.
+
+*Rotate `INTERNAL_API_KEY` and `NMI_SECURITY_KEY` once all five are on Railpack —*
+*that is the point at which a rotation actually clears the exposure, since new*
+*builds stop baking the replacements into layers.*
 
 ---
 
