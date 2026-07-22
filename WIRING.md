@@ -200,6 +200,61 @@ auth on the write endpoints. `DATABASE_URL` must be the Supabase **session-poole
 DSN (`postgres://…:5432/…`), the same database across `enrollment` + `billing-api`
 (+ `verdict-service`).
 
+### Known issue — Nixpacks build-time secrets
+
+*Recorded 2026-07-21. Open; fix planned below, not yet started.*
+
+All five services build with `"builder": "NIXPACKS"`. **There is no Dockerfile in
+this repo** — Railway's Nixpacks builder generates one on every build, and that
+generated file is the source of the build warnings:
+
+| Warning | Where it comes from |
+|---|---|
+| `SecretsUsedInArgOrEnv` (`INTERNAL_API_KEY`, `NMI_SECURITY_KEY`, …) | Railway passes **every** service variable into the build; Nixpacks emits `ARG X` + `ENV X=$X` per variable. BuildKit flags names matching `*_KEY` / `*_SECRET` / `*_TOKEN`. |
+| `UndefinedVar: $NIXPACKS_PATH` | Nixpacks codegen quirk (`ENV PATH=…:$NIXPACKS_PATH` in a stage where it isn't defined). **Not ours**, cosmetic, ignore. |
+
+**Impact — real but not urgent.** Railway images are private to the project
+registry, so this is not public exposure. However `ENV` values are baked into the
+image config and readable via `docker history` by anyone who can pull, they persist
+in build caches, and — the part that bites — **rotating a key in Railway does NOT
+purge it from already-built images.** Treat a key that has ever been in a build as
+compromised-on-rotation until the old images age out.
+
+**Nothing needs these secrets at build time.** Every service's `requirements.txt`
+is public PyPI only — no private index, no `git+ssh` dependency, no `pip.conf` /
+`.netrc`. The build is `pip install -r requirements.txt` and nothing else. The
+secrets are present purely because Railway injects all variables by default.
+
+#### Planned fix — migrate to committed per-service Dockerfiles
+
+Switch each service to a checked-in `Dockerfile` + `"builder": "DOCKERFILE"` in its
+`railway.json`. We then control exactly what enters the image: no secret `ARG`/`ENV`,
+secrets arrive only via Railway's **runtime** env injection, and `$NIXPACKS_PATH`
+disappears by construction.
+
+**Staged, one service at a time — never all five in one push.** There is no local
+Docker/Nixpacks/Railway CLI on the maintainer machine, so a Dockerfile's first real
+test is the deploy itself; a big-bang change risks taking down the money path with
+no verification step in between.
+
+- [ ] **Precondition:** first unattended `billing-cron` run (13:00 UTC, `0 13 * * *`)
+      observed clean — before starting any migration.
+- [ ] **1. `billing-runner`** — migrate first. Verify immediately after deploy:
+      `GET /version` returns the expected build, `GET /preflight` returns
+      `ready: true`. Then **watch the next scheduled 13:00 UTC cron run.**
+      ⚠️ `billing-cron` shares the `billing-runner/` directory (`railway.cron.json`,
+      `startCommand: python run.py`), so **any billing-runner Dockerfile change also
+      changes the cron service's build.** Verify **both** the web service and the
+      cron run after this step.
+- [ ] **2. `verdict-service`** — verify `GET /parser/health`.
+- [ ] **3. `billing-api`** — verify `GET /billing/health`.
+- [ ] **4. `webhooks`** — verify `GET /webhooks/health`.
+- [ ] **5. `enrollment`** — verify `GET /enroll/health` **and** a real
+      `GET /enroll/confirmation/{client_id}` render.
+
+Each step: deploy alone, verify, let it sit through one normal day before starting
+the next.
+
 ---
 
 ## 3. Gate `<<placeholder>>` wiring
